@@ -1,0 +1,103 @@
+﻿________________
+
+
+Reliable Underwater Communication Using Smartphones
+Proposed by: Prof. Arnab Paul
+Paper Reference: U-Flash: Improving Underwater Optical Communication by Scattering Effect (IMWUT 2024)
+Recent research has shown that underwater optical communication is possible using only commercial smartphones, by transmitting data through the phone’s flashlight and receiving it via the camera’s rolling-shutter effect. Surprisingly, the paper U-Flash demonstrates that light scattering in water can actually improve communication reliability rather than degrade it, by enlarging the camera’s Region of Interest (RoI) and improving detectability.
+However, even with these advantages, underwater communication using smartphones remains highly unreliable due to:
+* Rapid brightness fluctuations
+* Motion between transmitter and receiver
+* Ambient light interference
+* Bit errors caused by scattering and absorption
+Your task is to build a mobile application prototype that improves the reliability of underwater smartphone-to-smartphone communication, without using any external hardware.
+________________
+
+
+Main Challenge
+Design and implement a smartphone app that transmits and receives data underwater using only:
+* Smartphone flashlight (transmitter)
+* Smartphone camera (receiver)
+The app must increase communication reliability by reducing:
+* Bit Error Rate (BER)
+* Frame decoding failures
+* Sensitivity to motion and lighting changes
+________________
+
+
+Technical Constraints
+* No external hardware allowed
+   * No Fresnel lenses
+   * No optical filters
+   * No external LEDs or sensors
+* Only built-in phone components may be used:
+   * Flashlight
+   * Camera
+   * IMU (optional)
+   * Ambient light sensor (optional)
+* Any software-level techniques are allowed:
+   * Signal encoding/decoding
+   * Adaptive thresholds
+   * Frame selection
+   * Error correction
+   * Lightweight ML (optional)
+________________
+
+
+Conceptual Guidance
+To help you think:
+* The flashlight transmits data as ON/OFF light pulses.
+* The camera captures these pulses as bright and dark stripes due to the rolling shutter.
+* Scattering in water spreads light, which:
+   * Helps detection (bigger RoI)
+   * Hurts decoding (blur, inter-symbol interference)
+* Reliability depends on how well your app:
+   * Detects the RoI
+   * Separates symbols
+   * Handles brightness and motion changes
+Your solution should embrace scattering, not fight it.
+________________
+
+
+Expected Deliverables
+1. Working mobile app prototype (Android / iOS / cross-platform)
+2. Demonstration video (can be done in air, tank, or simulated water)
+3. Short technical write-up explaining:
+   * Encoding strategy
+   * Decoding strategy
+   * How reliability is improved
+4. Quantitative evaluation, at least one of:
+   * BER comparison
+   * Successful decode rate
+   * Performance under motion or noise
+________________
+
+
+Evaluation Criteria
+Criterion
+	Weight
+	Communication reliability (BER / decode success)
+	⭐⭐⭐⭐
+	Robustness to motion & lighting changes
+	⭐⭐⭐
+	Engineering clarity & correctness
+	⭐⭐⭐
+	Use of paper concepts (scattering, RoI, rolling shutter)
+	⭐⭐
+	App usability & clarity
+	⭐⭐
+	________________
+
+
+Optional Extensions (Bonus Points)
+Teams may optionally explore:
+* Adaptive modulation based on camera feedback
+* Dynamic thresholding across frames
+* Frame selection under motion blur
+* ML-based stripe classification (lightweight only)
+________________
+
+
+Point of Contact
+For any queries or clarifications regarding the Problem Statement:
+Prakhar Bhandari: +91 91365 40772

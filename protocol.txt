@@ -1,0 +1,28 @@
+Now for this project, There is a protocol that we've come up with and I want you to validate and evaluate this protocol.
+Think there are machines named machine A and machine B.
+There are some Named messages like:
+Calibration message 1: C1
+Calibration message 2: C2
+Message sequence start: S
+Message sequence end: E
+Packet request message: R<number> (here number is packet number)
+Packet: P<number> (here number is packet number)
+
+Now, before the actual communication starts, both machines need to get calibrated.
+Here is how calibration works:
+Both machines will emit the message C1. Now, C1 takes k units of time, so in this calibration phase, both machines will either "listen" for messages (C1) or transmit the message C1 (since a machine cant transmit and receive at the same time, and we are doing it random because at some point one of the machine will transmit and the other will receive). Now, the amount of time that the machine "listens" to is set to 3*k, and immediately after transmitting a message, the machine switches to "listening" mode. So there are 2 events that the machines choose from, one event being transmit data + immediately listen (k + 3*k unit of time) and the other event being just listen (3*k unit of time). So both devices has choice between a 4*k unit time event or a 3*k unit of time where randomly one machine is transmitting and one is receiving.
+
+Now, assume that machine A transmitted C1 which was successfully received by machine B. Machine B has now moved to "calibrated" state (now machine B does not choose between the 2 events anymore, it does a fixed k unit transmit of C2 followed by a 3*k receive, until the MAX_RETRIES is exceeded and machine B terminates) and will immediately transmit C2 message since machine A starts to "listen" immediately after transmitting the data. Machine A receives C2 message and moves into "both calibrated" state since C2 can only come when machine B is calibrated. After this, to make machine B to be "both calibrated" state, machine A sends a C2 message (now machine A does not choose between the 2 events anymore, it does a fixed k unit transmit of C2 followed by a 3*k receive, until the MAX_RETRIES is exceeded and machine A terminates) to B completing the 3 way handshake calibration phase.
+
+In this calibration phase, if any intermediate state is missed (like assume machine B not receiving message C2 but machine A transmitted it) there will be retries upto MAX_RETRIES after which the machine will terminate.
+
+This marks the end of calibration phase.
+
+Here is the actual message sending protocol:
+Now, machine B received the final C2 message making both the machines in "both calibrated" state.
+Machine B starts the messaging sequence by immediately sending a "S" message. When machine A receives it, A requests for the first packet by sending R:1, after machine B receives R:1, it sends P:1. Assume that the first message that B wants to send has 4 packets and after machine B sent P:4, machine A requests an R:5, Here, machine B will send "End of file" kind of a message called E.
+Now, since A received an E, machine A will send a S message and the entire process will repeat.
+Now, assume machine A is done sending and it has one more message, but it is B's turn to send message but B does not have a message to send, it would still send S, and when A will request R:1 machine B will send E since there is no message and it is A's turn again.
+
+Additionally, each of P:number, R:number, S and E will have a retry upto MAX_RETRIES if expected response is not received, after which machines will terminate.
+Each packet also has CRC8 error checking codes so that the receiving machine can request for the same packet again incase it is corrupted.
