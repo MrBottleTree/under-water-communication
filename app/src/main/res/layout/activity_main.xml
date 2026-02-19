@@ -45,6 +45,14 @@
         android:visibility="gone"
         android:layout_marginTop="8dp" />
 
+    <Button
+        android:id="@+id/receiveButton"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="RECEIVE (RoI camera)"
+        android:backgroundTint="#1565C0"
+        android:layout_marginTop="8dp" />
+
     <TextView
         android:id="@+id/statusText"
         android:layout_width="wrap_content"

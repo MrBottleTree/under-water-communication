@@ -2,6 +2,7 @@ package com.example.underwaterlink
 
 import android.Manifest
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.hardware.camera2.CameraManager
 import android.os.Bundle
@@ -47,6 +48,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var currentBitText: TextView
     private lateinit var binaryOutput: TextView
     private lateinit var binaryScroll: ScrollView
+    private lateinit var receiveButton: Button
 
     
     private lateinit var cameraManager: CameraManager
@@ -93,8 +95,13 @@ class MainActivity : AppCompatActivity() {
 
         requestCameraPermission()
 
+        receiveButton = findViewById(R.id.receiveButton)
+
         transmitButton.setOnClickListener { startTransmission() }
         stopButton.setOnClickListener { stopTransmission() }
+        receiveButton.setOnClickListener {
+            startActivity(Intent(this, ReceiverActivity::class.java))
+        }
     }
 
     private fun requestCameraPermission() {
