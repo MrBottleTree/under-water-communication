@@ -27,6 +27,11 @@
         <activity
             android:name=".ReceiverActivity"
             android:exported="false" />
+
+        <activity
+            android:name=".TestActivity"
+            android:exported="false"
+            android:screenOrientation="landscape" />
     </application>
 
 </manifest>

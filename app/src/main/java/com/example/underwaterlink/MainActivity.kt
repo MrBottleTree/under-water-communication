@@ -102,6 +102,9 @@ class MainActivity : AppCompatActivity() {
         receiveButton.setOnClickListener {
             startActivity(Intent(this, ReceiverActivity::class.java))
         }
+        findViewById<Button>(R.id.testModeButton).setOnClickListener {
+            startActivity(Intent(this, TestActivity::class.java))
+        }
     }
 
     private fun requestCameraPermission() {
