@@ -53,6 +53,14 @@
         android:backgroundTint="#1565C0"
         android:layout_marginTop="8dp" />
 
+    <Button
+        android:id="@+id/testModeButton"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="TEST MODE (histogram debug)"
+        android:backgroundTint="#4A148C"
+        android:layout_marginTop="8dp" />
+
     <TextView
         android:id="@+id/statusText"
         android:layout_width="wrap_content"
