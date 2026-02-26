@@ -2,12 +2,14 @@ package com.example.underwaterlink
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.hardware.camera2.CaptureRequest
 import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Process
 import android.os.SystemClock
 import android.util.Log
+import android.util.Range
 import android.util.Size
 import android.view.WindowManager
 import android.widget.Button
@@ -17,6 +19,8 @@ import android.widget.Toast
 import android.widget.ToggleButton
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.camera.camera2.interop.Camera2Interop
+import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.CameraControl
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
@@ -33,74 +37,84 @@ class TestActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "UnderwaterTest"
-        // C1 uses 100 ms/bit, C2 uses 300 ms/bit — 3× slower.
-        // Classification is by average inter-edge interval, not edge count, so it's robust
-        // even when some edges are missed at distance.
-        private const val BIT_PERIOD_NS     = 100_000_000L   // 100 ms per bit (C1 data, all preamble)
-        private const val C2_BIT_PERIOD_NS  = 300_000_000L   // 300 ms per bit (C2 data only)
-        private const val VOTE_THRESH       = 0.25f           // min |bitVote| to count as signal
 
-        // RX break detection
-        // Alternating data never produces more than ~2 consecutive dark frames at 20 fps.
-        // BREAK_DARK_FRAMES = 5 is unambiguous: only a real inter-phase gap can do this.
-        private const val BREAK_DARK_FRAMES   = 5
-        // How many consecutive signal frames (|bitVote| > threshold) to leave IDLE
-        private const val PREAMBLE_MIN_FRAMES = 4
+        // ── Bit periods ────────────────────────────────────────────────────────
+        private const val BIT_PERIOD_NS    = 100_000_000L  // 100ms — C1 (fast)
+        private const val C2_BIT_PERIOD_NS = 300_000_000L  // 300ms — C2 (slow)
 
-        // TX: protocol uses ONLY alternating bits — no sustained ON/OFF.
-        //   [preamble alt bits] ──500ms break──> [data alt bits] ──500ms break──> repeat
-        private const val TX_PREAMBLE_BITS = 12     // 1.2 s  – builds bimodal histogram (at 100ms/bit)
-        private const val TX_BREAK_MS      = 500L   // 0.5 s  – long enough for 400ms edge timeout to fire
-        private const val TX_ALT_BITS_C1   = 10     // 10 edges × 100 ms = 1.0 s
-        private const val TX_ALT_BITS_C2   = 10     // 10 edges × 300 ms = 3.0 s
+        // ── RX detection (async, no clock sync required) ───────────────────────
+        //
+        // The receiver measures edge-to-edge intervals and inspects the MINIMUM
+        // value in a sliding window.  This works at any phase in the stream.
+        //
+        // Physical model at 20 fps (50 ms/frame):
+        //   Consecutive edge intervals alternate between two types:
+        //     Type-A (rising→falling, includes uncertain-zone delay):
+        //       C1: 100ms + 50–150ms = 150–250ms
+        //       C2: 300ms + 50–150ms = 350–450ms
+        //     Type-B (falling→rising, delay works in our favour):
+        //       C1: ~50ms  (just 1 frame — very short)
+        //       C2: ~200ms
+        //
+        //   Minimum interval in any window of ≥ 6 edges:
+        //     C1: min ≈  50ms  → clearly < 125ms
+        //     C2: min ≈ 200ms  → clearly ≥ 125ms
+        //   125ms threshold gives ≥ 75ms margin from both classes.
+        //
+        private const val MIN_INTERVAL_NS        = 20_000_000L   // 20ms  — anti double-trigger
+        private const val FAST_THRESHOLD_NS      = 125_000_000L  // 125ms — min < this → C1
+        private const val EDGE_TIMEOUT_NS        = 700_000_000L  // 700ms — signal lost → IDLE
+        private const val INTERVAL_WINDOW        = 8             // sliding window size
+        private const val MIN_CLASSIFY_INTERVALS = 6             // need ≥ 6 to classify
 
-        // Classification threshold: C1 avg interval ≈ 100ms, C2 ≈ 300ms, threshold at midpoint.
-        private const val C1_C2_THRESHOLD_NS = 200_000_000L  // 200 ms
+        private const val VOTE_THRESH = 0.25f
 
-        // Edge-timeout: no edge for this long → data burst ended.
-        // Must be > C2_BIT_PERIOD_NS (300ms) so C2 edges don't time out early,
-        // and < TX_BREAK_MS (500ms) so it fires before the next cycle.
-        private const val EDGE_TIMEOUT_NS  = 400_000_000L
+        // ── Manual camera exposure (AE disabled) ───────────────────────────────
+        // Disabling AE prevents the camera from adapting to torch flashes (which
+        // compresses bright/dark amplitude → bitVote → 0 → detection fails).
+        // Tune for ambient: lower outdoors (e.g. 8ms), higher in dark (e.g. 33ms).
+        private const val MANUAL_EXPOSURE_NS = 16_000_000L  // 16ms
+        private const val MANUAL_ISO         = 800
     }
 
-    // ── RX state machine ──────────────────────────────────────────────────────
+    // ── RX state machine (2-state, fully async) ────────────────────────────────
     //
-    // Protocol:  [preamble alt-bits] ──300ms break──> [data alt-bits] ──300ms break──> repeat
+    // IDLE    — no recent signal; waiting for any definitive bright/dark frame
+    // SYNCING — accumulating edge intervals; classifies once window is full
     //
-    // States:
-    //  IDLE       – waiting for any signal to appear
-    //  PREAMBLE   – signal detected, waiting for the preamble→data break
-    //  DATA_WAIT  – in the break, waiting for the first data edge
-    //  RECEIVING  – counting data edges; edge timeout ends the burst
+    // Classification: minInterval < FAST_THRESHOLD_NS → C1, otherwise → C2
+    // No preamble, no break, no clock sync required.  Works from any phase.
 
-    private enum class RxState { IDLE, PREAMBLE, DATA_WAIT, RECEIVING }
+    private enum class RxState { IDLE, SYNCING }
 
-    @Volatile private var rxState     = RxState.IDLE
-    private var consecutiveBright     = 0   // signal frames in IDLE (|bitVote| > thresh)
-    private var consecutiveDark       = 0   // consecutive dark frames (break detection)
+    @Volatile private var rxState = RxState.IDLE
 
-    // Edge-based decoding state
-    private var currentSign           = 0   // last committed sign: +1=bright, -1=dark, 0=none
-    private var lastEdgeNs            = 0L  // timestamp of the most recent detected edge
-    private var dataEdges             = 0   // edges decoded in the current data burst
-    private var edgeIntervalTotal     = 0L  // sum of inter-edge intervals (ns)
-    private var edgeIntervalCount     = 0   // number of intervals measured (= dataEdges - 1)
+    // Schmitt-trigger sign (+1=bright, -1=dark, 0=uninitialised)
+    private var currentSign  = 0
+    private var lastEdgeNs   = 0L
 
-    // BER / display
-    private val rxBits                = StringBuilder()
-    private val exBits                = StringBuilder()
-    private var errorCount            = 0
-    private var totalBits             = 0
-    private var lastReceivedMsg       = ""
+    // Sliding window of edge-to-edge intervals
+    private val rxIntervals  = ArrayDeque<Long>()
+    private var totalEdges   = 0  // edges this SYNCING session
 
-    // ── GridAnalyzer (lazy-initialised on first camera frame) ─────────────────
+    // Display state — kept across resets; cleared only by RESET RX button
+    private var lastReceivedMsg = ""
+    private var lastAnnouncedNs = 0L   // throttle Toast to once per 3 s
+
+    // BER strip fields kept for overlay compatibility
+    private val rxBits   = StringBuilder()
+    private val exBits   = StringBuilder()
+    private var errorCount = 0
+    private var totalBits  = 0
+
+    // ── GridAnalyzer ──────────────────────────────────────────────────────────
 
     @Volatile private var analyzer: GridAnalyzer? = null
     private var currentAlpha      = 0.05f
     private var currentConfThresh = 0.15f
-    private var currentGridSize   = 8       // must match default in GridAnalyzer
-    private var currentWindowN    = 30      // rolling-window frame count
-    private var useWindowMode     = false   // mirrors modeToggle.isChecked; safe to read on any thread
+    private var currentGridSize   = 8
+    private var currentWindowN    = 30
+    private var useWindowMode     = false
     private val analyzerLock      = Any()
 
     // ── FPS tracking ──────────────────────────────────────────────────────────
@@ -188,15 +202,9 @@ class TestActivity : AppCompatActivity() {
     // ── Sliders ───────────────────────────────────────────────────────────────
 
     private fun setupSliders() {
-        // ── Mode toggle: α-decay  ↔  rolling-window N frames ─────────────────
-        //
-        // The same SeekBar is reused for both modes:
-        //   α-decay  mode: progress 0–999  →  alpha  = (p+1)/1000  (0.001 – 1.000)
-        //   N-window mode: progress 0–999  →  N      = p+1         (1 – 1000 frames)
         modeToggle.setOnCheckedChangeListener { _, isChecked ->
             useWindowMode = isChecked
             if (isChecked) {
-                // Switch to N-window: re-range slider to 1–1000
                 alphaSeekBar.max      = 999
                 alphaSeekBar.progress = (currentWindowN - 1).coerceIn(0, 999)
                 alphaValueText.text   = "N=${currentWindowN}"
@@ -205,19 +213,15 @@ class TestActivity : AppCompatActivity() {
                     analyzer?.windowSize       = currentWindowN
                 }
             } else {
-                // Switch back to α-decay
                 alphaSeekBar.max      = 999
                 alphaSeekBar.progress = (currentAlpha * 1000f - 1f).toInt().coerceIn(0, 999)
                 alphaValueText.text   = "α=${String.format("%.3f", currentAlpha)}"
-                synchronized(analyzerLock) {
-                    analyzer?.useRollingWindow = false
-                }
+                synchronized(analyzerLock) { analyzer?.useRollingWindow = false }
             }
         }
 
-        // Dual-purpose SeekBar (starts in α-decay mode)
         alphaSeekBar.max      = 999
-        alphaSeekBar.progress = 49           // default α = 0.050
+        alphaSeekBar.progress = 49
         alphaValueText.text   = "α=0.050"
         alphaSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(sb: SeekBar, p: Int, fromUser: Boolean) {
@@ -235,9 +239,8 @@ class TestActivity : AppCompatActivity() {
             override fun onStopTrackingTouch(sb: SeekBar) {}
         })
 
-        // Conf threshold: progress 0–100  →  conf = p / 100  →  0.00 to 1.00
         confSeekBar.max      = 100
-        confSeekBar.progress = 15            // default 0.150
+        confSeekBar.progress = 15
         confValueText.text   = "0.150"
         confSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(sb: SeekBar, p: Int, fromUser: Boolean) {
@@ -249,15 +252,14 @@ class TestActivity : AppCompatActivity() {
             override fun onStopTrackingTouch(sb: SeekBar) {}
         })
 
-        // Grid size: progress 0–3  →  gridSize = 4 << p  →  4, 8, 16, 32 px
         gridSeekBar.max      = 3
-        gridSeekBar.progress = 1             // default 8 px
+        gridSeekBar.progress = 1
         gridValueText.text   = "8px"
         gridSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(sb: SeekBar, p: Int, fromUser: Boolean) {
                 currentGridSize    = 4 shl p
                 gridValueText.text = "${currentGridSize}px"
-                synchronized(analyzerLock) { analyzer = null }   // re-init on next frame
+                synchronized(analyzerLock) { analyzer = null }
                 resetRx()
             }
             override fun onStartTrackingTouch(sb: SeekBar) {}
@@ -268,14 +270,15 @@ class TestActivity : AppCompatActivity() {
     // ── Buttons ───────────────────────────────────────────────────────────────
 
     private fun setupButtons() {
-        txC1Button.setOnClickListener  { startTx(TX_ALT_BITS_C1, BIT_PERIOD_NS) }
-        txC2Button.setOnClickListener  { startTx(TX_ALT_BITS_C2, C2_BIT_PERIOD_NS) }
+        txC1Button.setOnClickListener  { startTx(BIT_PERIOD_NS) }
+        txC2Button.setOnClickListener  { startTx(C2_BIT_PERIOD_NS) }
         stopTxButton.setOnClickListener { stopTx() }
         findViewById<Button>(R.id.testResetRxButton).setOnClickListener { resetRx() }
     }
 
     // ── Camera ────────────────────────────────────────────────────────────────
 
+    @OptIn(ExperimentalCamera2Interop::class)
     private fun startCamera() {
         val future = ProcessCameraProvider.getInstance(this)
         future.addListener({
@@ -284,7 +287,7 @@ class TestActivity : AppCompatActivity() {
             val preview = Preview.Builder().build()
             preview.surfaceProvider = previewView.surfaceProvider
 
-            val analysis = ImageAnalysis.Builder()
+            val analysisBuilder = ImageAnalysis.Builder()
                 .setResolutionSelector(
                     ResolutionSelector.Builder()
                         .setResolutionStrategy(
@@ -296,7 +299,17 @@ class TestActivity : AppCompatActivity() {
                 )
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
-                .build()
+
+            // Disable AE so the camera cannot adapt to torch flashes.
+            // When AE is ON it compensates within 1-3 frames → bitVote collapses → no edges.
+            Camera2Interop.Extender(analysisBuilder)
+                .setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(20, 20))
+                .setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
+                .setCaptureRequestOption(CaptureRequest.SENSOR_EXPOSURE_TIME, MANUAL_EXPOSURE_NS)
+                .setCaptureRequestOption(CaptureRequest.SENSOR_SENSITIVITY, MANUAL_ISO)
+                .setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
+
+            val analysis = analysisBuilder.build()
 
             analysis.setAnalyzer(cameraExecutor) { imageProxy: ImageProxy ->
                 val plane     = imageProxy.planes[0]
@@ -304,20 +317,18 @@ class TestActivity : AppCompatActivity() {
                 val rowStride = plane.rowStride
                 val frameNs   = imageProxy.imageInfo.timestamp
 
-                // Lazy-initialise (or re-init after grid-size change) with actual resolution
                 if (analyzer == null) {
                     val w = imageProxy.width
                     val h = imageProxy.height
                     synchronized(analyzerLock) {
                         if (analyzer == null) {
                             analyzer = GridAnalyzer(
-                                imageWidth = w,
-                                imageHeight = h,
-                                gridSize = currentGridSize,
-                                alpha = currentAlpha,
+                                imageWidth          = w,
+                                imageHeight         = h,
+                                gridSize            = currentGridSize,
+                                alpha               = currentAlpha,
                                 confidenceThreshold = currentConfThresh
                             ).also { a ->
-                                // Restore window mode if it was active before re-init
                                 if (useWindowMode) {
                                     a.useRollingWindow = true
                                     a.windowSize       = currentWindowN
@@ -328,7 +339,6 @@ class TestActivity : AppCompatActivity() {
                     runOnUiThread { debugOverlay.setImageDimensions(w, h) }
                 }
 
-                // Smooth FPS
                 if (lastFrameNs > 0) {
                     val inst = 1_000_000_000f / (frameNs - lastFrameNs).toFloat()
                     smoothFps = smoothFps * 0.85f + inst * 0.15f
@@ -359,9 +369,20 @@ class TestActivity : AppCompatActivity() {
                             lastReceivedMessage = lastReceivedMsg
                         )
                     )
-                    val avgMs = if (edgeIntervalCount > 0) edgeIntervalTotal / edgeIntervalCount / 1_000_000L else 0L
-                    stateText.text = "RX: ${rxState.name}  e:$dataEdges avg:${avgMs}ms"
-                    statsText.text = "ERR $errorCount/$totalBits"
+
+                    // Status line
+                    val minNs   = rxIntervals.minOrNull() ?: Long.MAX_VALUE
+                    val extra = when {
+                        rxState == RxState.SYNCING && rxIntervals.size >= MIN_CLASSIFY_INTERVALS -> {
+                            val label = if (minNs < FAST_THRESHOLD_NS) "C1" else "C2"
+                            " [$label] min=${minNs/1_000_000L}ms e=$totalEdges"
+                        }
+                        rxState == RxState.SYNCING ->
+                            " collecting ${rxIntervals.size}/$MIN_CLASSIFY_INTERVALS"
+                        else -> ""
+                    }
+                    stateText.text = "RX: ${rxState.name}$extra"
+                    statsText.text = if (lastReceivedMsg.isNotEmpty()) lastReceivedMsg else "—"
                 }
 
                 imageProxy.close()
@@ -383,203 +404,152 @@ class TestActivity : AppCompatActivity() {
     // ── RX state machine ──────────────────────────────────────────────────────
 
     private fun processRxState(result: GridResult, frameNs: Long) {
-        val isBright = result.bitVote > VOTE_THRESH
+        val isBright = result.bitVote >  VOTE_THRESH
         val isDark   = result.bitVote < -VOTE_THRESH
 
         when (rxState) {
 
-            // ── IDLE: wait for any alternating signal to appear ────────────────────
+            // ── IDLE: wait for any definitive signal ──────────────────────────
             RxState.IDLE -> {
-                if (isBright || isDark) consecutiveBright++ else consecutiveBright = 0
-                if (consecutiveBright >= PREAMBLE_MIN_FRAMES) {
-                    rxState = RxState.PREAMBLE
-                    consecutiveBright = 0; consecutiveDark = 0
+                if (isBright || isDark) {
                     currentSign = if (isBright) 1 else -1
-                }
-            }
-
-            // ── PREAMBLE: preamble running, wait for the break ─────────────────────
-            // A break = BREAK_DARK_FRAMES consecutive dark frames.
-            // Alternating data never produces more than 2 consecutive dark frames at 20 fps.
-            RxState.PREAMBLE -> {
-                if (isDark) consecutiveDark++ else consecutiveDark = 0
-                if (consecutiveDark >= BREAK_DARK_FRAMES) {
-                    rxState = RxState.DATA_WAIT
-                    consecutiveDark = 0
-                    currentSign = -1   // we know we are dark after the break
-                }
-            }
-
-            // ── DATA_WAIT: inside the break, wait for the first data edge ──────────
-            RxState.DATA_WAIT -> {
-                if (isBright) {
-                    // Rising edge → bit 0 = 1 (data always starts bright)
-                    currentSign = 1
                     lastEdgeNs  = frameNs
-                    dataEdges   = 1
-                    totalBits++
-                    // bit 0 should be 1 (rising) → no error
-                    rxBits.append(1); exBits.append(1)
-                    if (rxBits.length > 80) { rxBits.deleteCharAt(0); exBits.deleteCharAt(0) }
-                    rxState = RxState.RECEIVING
+                    rxIntervals.clear()
+                    totalEdges  = 0
+                    rxState     = RxState.SYNCING
                 }
             }
 
-            // ── RECEIVING: edge-detect every transition, timeout = end-of-data ─────
+            // ── SYNCING: measure intervals, classify by minimum ───────────────
             //
-            // Classification is by average inter-edge interval, not edge count:
-            //   C1 sends at 100 ms/bit → avg interval ≈ 100 ms
-            //   C2 sends at 300 ms/bit → avg interval ≈ 300 ms
-            //   Threshold at 200 ms gives a 2× safety margin on each side.
-            // This is robust even if some edges are missed at distance.
-            RxState.RECEIVING -> {
-                // End-of-data detection: no edge for > 400 ms
-                if (lastEdgeNs > 0 && frameNs - lastEdgeNs > EDGE_TIMEOUT_NS) {
-                    announceReceivedMessage()
-                    rxState = RxState.IDLE
-                    consecutiveBright = 0; consecutiveDark = 0
-                    // Clear per-burst state so next reception starts fresh
-                    currentSign = 0; lastEdgeNs = 0L; dataEdges = 0
-                    edgeIntervalTotal = 0L; edgeIntervalCount = 0
+            // The minimum interval in a window of N edges reliably discriminates:
+            //   C1 (100ms/bit): alternates ~50ms / ~200ms → min ≈  50ms (< 125ms)
+            //   C2 (300ms/bit): alternates ~200ms / ~400ms → min ≈ 200ms (≥ 125ms)
+            //
+            // Works regardless of where in the TX stream the receiver starts.
+            RxState.SYNCING -> {
+                // Signal lost → back to IDLE
+                if (frameNs - lastEdgeNs > EDGE_TIMEOUT_NS) {
+                    Log.v(TAG, "SYNCING: timeout e=$totalEdges")
+                    clearToIdle()
                     return
                 }
 
-                // Schmitt-trigger edge detection (hysteresis via VOTE_THRESH)
+                // Schmitt-trigger edge detection
                 val prevSign = currentSign
                 if      (isBright && currentSign != 1)  currentSign = 1
                 else if (isDark   && currentSign != -1) currentSign = -1
-                // If uncertain, hold last sign (no spurious edges)
 
                 if (currentSign != prevSign && prevSign != 0) {
-                    // Accumulate interval from the previous edge
-                    if (lastEdgeNs > 0) {
-                        edgeIntervalTotal += frameNs - lastEdgeNs
-                        edgeIntervalCount++
+                    val interval = frameNs - lastEdgeNs
+                    lastEdgeNs   = frameNs
+
+                    if (interval < MIN_INTERVAL_NS) return  // double-trigger, skip
+
+                    // Add to sliding window, evict oldest if full
+                    rxIntervals.addLast(interval)
+                    if (rxIntervals.size > INTERVAL_WINDOW) rxIntervals.removeFirst()
+                    totalEdges++
+
+                    Log.v(TAG, "SYNCING: e=$totalEdges interval=${interval/1_000_000L}ms window=${rxIntervals.size}")
+
+                    // Classify once we have enough samples
+                    if (rxIntervals.size >= MIN_CLASSIFY_INTERVALS) {
+                        val minInterval = rxIntervals.minOrNull() ?: return
+                        val label = if (minInterval < FAST_THRESHOLD_NS) "C1" else "C2"
+                        lastReceivedMsg = "$label RECEIVED"
+                        totalBits = totalEdges
+
+                        // Toast — throttled to once every 3 seconds
+                        if (frameNs - lastAnnouncedNs > 3_000_000_000L) {
+                            lastAnnouncedNs = frameNs
+                            val msg = lastReceivedMsg
+                            runOnUiThread {
+                                Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+                            }
+                        }
                     }
-                    lastEdgeNs = frameNs
-                    val decodedBit  = if (currentSign > 0) 1 else 0
-                    // alternating pattern: even-indexed edges are rising (1), odd are falling (0)
-                    val expectedBit = if (dataEdges % 2 == 0) 1 else 0
-                    dataEdges++
-                    totalBits++
-                    if (decodedBit != expectedBit) errorCount++
-                    rxBits.append(decodedBit); exBits.append(expectedBit)
-                    if (rxBits.length > 80) { rxBits.deleteCharAt(0); exBits.deleteCharAt(0) }
                 }
             }
         }
     }
 
-    /**
-     * Called when the edge-timeout ends a burst — classify as C1 or C2.
-     *
-     * Uses average inter-edge interval rather than edge count.
-     * C1 (100ms/bit) → avg ≈ 100ms; C2 (300ms/bit) → avg ≈ 300ms.
-     * Threshold = 200ms (midpoint). Robust even when edges are missed at distance,
-     * because the timing ratio is preserved: a missed C1 edge gives ~200ms interval,
-     * still well below C2's ~300ms.
-     */
-    private fun announceReceivedMessage() {
-        if (dataEdges == 0) return
-        val avgIntervalMs = if (edgeIntervalCount > 0) edgeIntervalTotal / edgeIntervalCount / 1_000_000L else 0L
-        lastReceivedMsg = if (avgIntervalMs < 200L) "C1 RECEIVED" else "C2 RECEIVED"
-        Log.d(TAG, "$lastReceivedMsg (edges=$dataEdges, avgInterval=${avgIntervalMs}ms)")
+    // ── Reset helpers ─────────────────────────────────────────────────────────
+
+    private fun clearToIdle() {
+        rxState     = RxState.IDLE
+        currentSign = 0
+        lastEdgeNs  = 0L
+        rxIntervals.clear()
+        totalEdges  = 0
     }
 
     private fun resetRx() {
-        rxState = RxState.IDLE
-        consecutiveBright = 0; consecutiveDark = 0
-        currentSign = 0; lastEdgeNs = 0L; dataEdges = 0
-        edgeIntervalTotal = 0L; edgeIntervalCount = 0
+        clearToIdle()
+        lastReceivedMsg = ""
+        lastAnnouncedNs = 0L
         rxBits.clear(); exBits.clear()
         errorCount = 0; totalBits = 0
-        lastReceivedMsg = ""
         synchronized(analyzerLock) { analyzer?.reset() }
     }
 
-    // ── TX (HandlerThread, timing-critical) ───────────────────────────────────
+    // ── TX ────────────────────────────────────────────────────────────────────
 
-    private fun startTx(altBits: Int, dataBitPeriodNs: Long) {
+    private fun startTx(bitPeriodNs: Long) {
         if (isTxRunning) return
         isTxRunning = true
-        txC1Button.isEnabled  = false
-        txC2Button.isEnabled  = false
+        txC1Button.isEnabled   = false
+        txC2Button.isEnabled   = false
         stopTxButton.isEnabled = true
 
         txThread = HandlerThread("TestTX").also { it.start() }
         txHandler = Handler(txThread!!.looper)
-        txHandler!!.post { txLoop(altBits, dataBitPeriodNs) }
+        txHandler!!.post { txLoop(bitPeriodNs) }
     }
 
     private fun stopTx() {
         isTxRunning = false
-        txC1Button.isEnabled  = true
-        txC2Button.isEnabled  = true
+        txC1Button.isEnabled   = true
+        txC2Button.isEnabled   = true
         stopTxButton.isEnabled = false
         cameraControl?.enableTorch(false)
         txThread?.quitSafely()
     }
 
     /**
-     * TX loop (all alternating bits — no sustained ON/OFF):
-     *   [TX_PREAMBLE_BITS alt bits @ 100ms] ──500ms break──> [altBits alt bits @ dataBitPeriodNs] ──500ms break──> repeat
+     * TX: continuous alternating ON/OFF at [bitPeriodNs] per bit.
      *
-     * C1: dataBitPeriodNs = 100ms → edges every 100ms → RX avg interval ≈ 100ms → "C1 RECEIVED"
-     * C2: dataBitPeriodNs = 300ms → edges every 300ms → RX avg interval ≈ 300ms → "C2 RECEIVED"
-     * Threshold at 200ms gives a 2× safety margin, robust even if edges are missed at distance.
+     * C1: bitPeriodNs = 100ms  (fast)
+     * C2: bitPeriodNs = 300ms  (slow)
      *
-     * Preamble always runs at 100ms/bit regardless of C1/C2, so the histogram builds up
-     * at the same rate in both cases. Only the data phase uses the per-message period.
+     * No preamble, no break, no framing — just pure alternating pulses.
+     * The receiver classifies by the minimum observed edge interval (async-safe).
+     * Absolute wall-clock scheduling prevents jitter accumulation.
      */
-    private fun txLoop(altBits: Int, dataBitPeriodNs: Long) {
+    private fun txLoop(bitPeriodNs: Long) {
         Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
 
-        // Warmup: pre-init the torch HAL (first setTorchMode is always slow)
+        // Warmup: burn the first slow torch-HAL initialisation call.
         torch(true);  Thread.sleep(50)
         torch(false); Thread.sleep(100)
 
+        val start = SystemClock.elapsedRealtimeNanos()
+        var i = 0L
         while (isTxRunning) {
-            val cycleStart = SystemClock.elapsedRealtimeNanos()
-
-            // ── Preamble: TX_PREAMBLE_BITS alternating bits at 100 ms/bit ─────────
-            // Allows the receiver's bimodal histogram to build up before data arrives.
-            for (i in 0..TX_PREAMBLE_BITS) {
-                if (!isTxRunning) break
-                spinWait(cycleStart + i * BIT_PERIOD_NS)
-                torch(i % 2 == 0 && i < TX_PREAMBLE_BITS)  // OFF at i = TX_PREAMBLE_BITS
-            }
-
-            // ── Break: TX_BREAK_MS silence ────────────────────────────────────────
-            // Torch is already OFF from the last preamble event.
-            // RX detects ≥5 consecutive dark frames → transitions to DATA_WAIT.
-            val dataStart = cycleStart + TX_PREAMBLE_BITS * BIT_PERIOD_NS + TX_BREAK_MS * 1_000_000L
-            spinWait(dataStart)
-
-            // ── Data: altBits alternating bits at dataBitPeriodNs ─────────────────
-            // C1 → 100ms/bit, C2 → 300ms/bit. RX classifies by average inter-edge interval.
-            for (i in 0..altBits) {
-                if (!isTxRunning) break
-                spinWait(dataStart + i * dataBitPeriodNs)
-                torch(i % 2 == 0 && i < altBits)           // OFF at i = altBits
-            }
-
-            // ── Break at end ──────────────────────────────────────────────────────
-            // Torch is already OFF. RX edge-timeout (400 ms) fires inside this 500ms gap.
-            val cycleEnd = dataStart + altBits * dataBitPeriodNs + TX_BREAK_MS * 1_000_000L
-            spinWait(cycleEnd)
+            spinWait(start + i * bitPeriodNs)
+            torch(i % 2L == 0L)   // ON for even indices, OFF for odd
+            i++
         }
 
         torch(false)
         runOnUiThread {
-            txC1Button.isEnabled  = true
-            txC2Button.isEnabled  = true
+            txC1Button.isEnabled   = true
+            txC2Button.isEnabled   = true
             stopTxButton.isEnabled = false
         }
     }
 
-    private fun torch(on: Boolean) {
-        cameraControl?.enableTorch(on)
-    }
+    private fun torch(on: Boolean) { cameraControl?.enableTorch(on) }
 
     private fun spinWait(targetNs: Long) {
         while (isTxRunning && SystemClock.elapsedRealtimeNanos() < targetNs) { /* busy-wait */ }
