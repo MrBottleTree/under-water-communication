@@ -102,8 +102,8 @@ class GridAnalyzer(
 
     // ── Public API ────────────────────────────────────────────────────────────
 
-    fun processFrame(buffer: ByteBuffer, rowStride: Int): GridResult {
-        extractBrightness(buffer, rowStride)
+    fun processFrame(buffer: ByteBuffer, rowStride: Int, cropX: Int = 0, cropY: Int = 0): GridResult {
+        extractBrightness(buffer, rowStride, cropX, cropY)
         updateHistograms()
         computeAllOtsu()
 
@@ -143,14 +143,14 @@ class GridAnalyzer(
 
     // ── Private helpers ───────────────────────────────────────────────────────
 
-    /** Average Y-plane luma for each grid cell. */
-    private fun extractBrightness(buffer: ByteBuffer, rowStride: Int) {
+    /** Average Y-plane luma for each grid cell. cropX/cropY offset into a larger buffer for digital zoom. */
+    private fun extractBrightness(buffer: ByteBuffer, rowStride: Int, cropX: Int, cropY: Int) {
         val scale = 1f / (gridSize * gridSize * 255f)
         for (row in 0 until rows) {
             for (col in 0 until cols) {
                 var sum = 0
                 for (py in 0 until gridSize) {
-                    val lineStart = (row * gridSize + py) * rowStride + col * gridSize
+                    val lineStart = (cropY + row * gridSize + py) * rowStride + (cropX + col * gridSize)
                     for (px in 0 until gridSize) {
                         sum += buffer.get(lineStart + px).toInt() and 0xFF
                     }

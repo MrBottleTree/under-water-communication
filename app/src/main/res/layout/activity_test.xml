@@ -47,6 +47,68 @@
         android:paddingTop="4dp"
         android:paddingBottom="4dp">
 
+        <!-- Row 0: Digital zoom (capture at N× resolution, crop centre to 480p) -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginBottom="2dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="zoom"
+                android:textColor="#AAAAAA"
+                android:textSize="11sp"
+                android:fontFamily="monospace"
+                android:layout_marginEnd="6dp" />
+
+            <Button
+                android:id="@+id/zoom1xButton"
+                android:layout_width="wrap_content"
+                android:layout_height="30dp"
+                android:text="1×"
+                android:textSize="12sp"
+                android:backgroundTint="#1B5E20"
+                android:paddingStart="16dp"
+                android:paddingEnd="16dp" />
+
+            <Button
+                android:id="@+id/zoom2xButton"
+                android:layout_width="wrap_content"
+                android:layout_height="30dp"
+                android:text="2×"
+                android:textSize="12sp"
+                android:backgroundTint="#333333"
+                android:paddingStart="16dp"
+                android:paddingEnd="16dp"
+                android:layout_marginStart="4dp" />
+
+            <Button
+                android:id="@+id/zoom4xButton"
+                android:layout_width="wrap_content"
+                android:layout_height="30dp"
+                android:text="4×"
+                android:textSize="12sp"
+                android:backgroundTint="#333333"
+                android:paddingStart="16dp"
+                android:paddingEnd="16dp"
+                android:layout_marginStart="4dp" />
+
+            <TextView
+                android:id="@+id/zoomLabel"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginStart="8dp"
+                android:text="1× (640×480)"
+                android:textColor="#FFFFFF"
+                android:textSize="11sp"
+                android:fontFamily="monospace" />
+
+        </LinearLayout>
+
         <!-- Row 1: TX buttons + state + stats -->
         <LinearLayout
             android:layout_width="match_parent"
