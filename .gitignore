@@ -38,3 +38,5 @@ Thumbs.db
 GEMINI.md
 CLAUDE.md
 .claude/
+/.venv/
+**.xlsx
