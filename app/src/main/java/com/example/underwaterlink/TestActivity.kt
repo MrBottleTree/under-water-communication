@@ -8,6 +8,7 @@ import android.hardware.camera2.CaptureRequest
 import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.Looper
 import android.os.Process
 import android.os.SystemClock
 import android.util.Log
@@ -87,7 +88,23 @@ class TestActivity : AppCompatActivity() {
         private const val AE_EMA_ALPHA         = 0.05f         // EMA smoothing (~1s time constant)
         private const val AE_MAX_STEP          = 0.15f         // max ±15% change per update
         private const val AE_MIN_EXPOSURE_NS   = 4_000_000L    // 4ms  floor
-        private const val AE_MAX_EXPOSURE_NS   = 100_000_000L  // 100ms ceiling
+        // Ceiling capped at one frame period (50ms = 1/20fps).  Exposures longer than
+        // the frame period physically prevent 20fps regardless of FPS range hints.
+        private const val AE_MAX_EXPOSURE_NS   = 50_000_000L   // 50ms ceiling (= 1/20fps)
+        // Explicit frame duration for AE_MODE_OFF.  CONTROL_AE_TARGET_FPS_RANGE is only
+        // a hint and is often ignored by the HAL when AE is off; SENSOR_FRAME_DURATION
+        // is the authoritative field that locks the frame period.
+        private const val SENSOR_FRAME_DURATION_NS = 50_000_000L  // 50ms = 20fps
+
+        // ── Auto-sync timing ───────────────────────────────────────────────────
+        private const val SYNC_TX_WINDOW_MS       = 2_000L   // TX each probing phase: 2s
+        private const val SYNC_RX_WINDOW_MS       = 6_000L   // RX each probing phase: 6s (3× TX)
+        private const val SYNC_MAX_RETRY_DELAY_MS = 3_000L   // random backoff 0–3s before retry
+        private const val SYNC_BURST_MS           = 2_000L   // sync signal (C1) burst from responder
+        // Guard delay before each response TX.  Classification fires after ~600ms (6 edges
+        // at 100ms/bit), but the sender's window runs for SYNC_TX_WINDOW_MS = 2s.
+        // Waiting 2s from classification guarantees the sender has stopped before we start TX.
+        private const val SYNC_RESPONSE_DELAY_MS  = 2_000L
     }
 
     // ── RX state machine (2-state, fully async) ────────────────────────────────
@@ -99,6 +116,19 @@ class TestActivity : AppCompatActivity() {
     // No preamble, no break, no clock sync required.  Works from any phase.
 
     private enum class RxState { IDLE, SYNCING }
+
+    // ── Auto-sync state machine ────────────────────────────────────────────────
+    private enum class AutoSyncState {
+        OFF,         // auto-sync not running
+        PROBING,     // random TX C1 or RX — finding partner
+        WAIT_ACK,    // initiator: sent C1, now RX waiting for C2 ACK
+        SEND_ACK,    // responder: received C1, now TX C2 ACK
+        WAIT_FINAL,  // responder: sent C2 ACK, now RX waiting for final C2
+        SEND_FINAL,  // initiator: received C2 ACK, now TX final C2
+        WAIT_SYNC,   // initiator: sent final C2, now RX waiting for sync signal (C1)
+        SEND_SYNC,   // responder: received final C2, now TX sync signal (C1 burst)
+        SYNCED       // both devices: TX C1 continuously (synchronized flash)
+    }
 
     @Volatile private var rxState = RxState.IDLE
 
@@ -119,6 +149,15 @@ class TestActivity : AppCompatActivity() {
     private val exBits   = StringBuilder()
     private var errorCount = 0
     private var totalBits  = 0
+
+    // ── Auto-sync state variables ──────────────────────────────────────────────
+    @Volatile private var autoSyncState      = AutoSyncState.OFF
+    private var handshakeDeviceState         = 0          // 0 / 1 / 2 (shown in debug)
+    private var syncRole                     = "?"        // "?" | "INIT" | "RESP"
+    @Volatile private var syncIsTxActive     = false      // true while TX in auto-sync (pauses histogram)
+    private var rxPhaseHandled               = false      // prevent double-fire per RX window
+    private val syncHandler                  = Handler(Looper.getMainLooper())
+    private var syncRxTimeoutRunnable: Runnable? = null
 
     // ── Zoom ──────────────────────────────────────────────────────────────────
 
@@ -180,6 +219,9 @@ class TestActivity : AppCompatActivity() {
     private lateinit var gridValueText:  TextView
     private lateinit var modeToggle:     ToggleButton
     private lateinit var histogramPanel: HistogramPanelView
+    private lateinit var autoSyncButton: Button
+    private lateinit var stopSyncButton: Button
+    private lateinit var syncStateText:  TextView
 
     // ── Permission ────────────────────────────────────────────────────────────
 
@@ -216,6 +258,9 @@ class TestActivity : AppCompatActivity() {
         zoom2xButton   = findViewById(R.id.zoom2xButton)
         zoom4xButton   = findViewById(R.id.zoom4xButton)
         zoomLabel      = findViewById(R.id.zoomLabel)
+        autoSyncButton = findViewById(R.id.autoSyncButton)
+        stopSyncButton = findViewById(R.id.stopSyncButton)
+        syncStateText  = findViewById(R.id.syncStateText)
 
         setupSliders()
         setupButtons()
@@ -229,6 +274,7 @@ class TestActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        syncHandler.removeCallbacksAndMessages(null)
         isTxRunning = false
         txThread?.quitSafely()
         cameraExecutor.shutdown()
@@ -310,6 +356,9 @@ class TestActivity : AppCompatActivity() {
         txC2Button.setOnClickListener  { startTx(C2_BIT_PERIOD_NS) }
         stopTxButton.setOnClickListener { stopTx() }
         findViewById<Button>(R.id.testResetRxButton).setOnClickListener { resetRx() }
+        autoSyncButton.setOnClickListener { startAutoSync() }
+        stopSyncButton.setOnClickListener { stopAutoSync() }
+        stopSyncButton.isEnabled = false
     }
 
     // ── Zoom ──────────────────────────────────────────────────────────────────
@@ -370,6 +419,7 @@ class TestActivity : AppCompatActivity() {
                 .setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(20, 20))
                 .setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
                 .setCaptureRequestOption(CaptureRequest.SENSOR_EXPOSURE_TIME, aeExposureNs)
+                .setCaptureRequestOption(CaptureRequest.SENSOR_FRAME_DURATION, SENSOR_FRAME_DURATION_NS)
                 .setCaptureRequestOption(CaptureRequest.SENSOR_SENSITIVITY, MANUAL_ISO)
                 .setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
 
@@ -381,6 +431,7 @@ class TestActivity : AppCompatActivity() {
                 val rowStride = plane.rowStride
                 val frameNs   = imageProxy.imageInfo.timestamp
 
+                // Lazy init — always runs so analyzer is ready when RX phase starts.
                 if (analyzer == null) {
                     val w = imageProxy.width
                     val h = imageProxy.height
@@ -409,67 +460,91 @@ class TestActivity : AppCompatActivity() {
                 }
                 lastFrameNs = frameNs
 
-                val result = synchronized(analyzerLock) {
-                    analyzer!!.processFrame(buffer, rowStride)
-                }
-
-                processRxState(result, frameNs)
-
-                // ── Slow software AE ───────────────────────────────────────────────
-                // Use the mean brightness across ALL grids as the AE signal.
-                // The LED covers only a few grids out of the full grid, so its
-                // flashing barely moves the whole-frame mean — no need to mask it.
-                val meanBrightness = result.brightness.average().toFloat()
-                aeBrightnessEma = if (aeBrightnessEma < 0f) meanBrightness          // first frame
-                                  else aeBrightnessEma * (1f - AE_EMA_ALPHA) + meanBrightness * AE_EMA_ALPHA
-                aeFrameCount++
-                if (aeFrameCount % AE_UPDATE_FRAMES == 0) {
-                    val error    = AE_TARGET_BRIGHTNESS - aeBrightnessEma
-                    val step     = (error * 0.5f).coerceIn(-AE_MAX_STEP, AE_MAX_STEP)
-                    val newExp   = (aeExposureNs * (1f + step)).toLong()
-                                      .coerceIn(AE_MIN_EXPOSURE_NS, AE_MAX_EXPOSURE_NS)
-                    if (newExp != aeExposureNs) {
-                        aeExposureNs = newExp
-                        applyExposure(newExp)
-                        Log.v(TAG, "AE: brt=${String.format("%.2f", aeBrightnessEma)} " +
-                                   "step=${String.format("%+.0f", step * 100)}% " +
-                                   "exp=${newExp / 1_000_000L}ms")
+                if (!syncIsTxActive) {
+                    val result = synchronized(analyzerLock) {
+                        analyzer!!.processFrame(buffer, rowStride)
                     }
-                }
 
-                runOnUiThread {
-                    histogramPanel.update(result)
-                    debugOverlay.update(
-                        DebugOverlayView.DebugData(
-                            result              = result,
-                            state               = rxState.name,
-                            alpha               = currentAlpha,
-                            confThreshold       = currentConfThresh,
-                            fps                 = smoothFps,
-                            bitVote             = result.bitVote,
-                            receivedBits        = rxBits.toString(),
-                            expectedBits        = exBits.toString(),
-                            errorCount          = errorCount,
-                            totalBits           = totalBits,
-                            uncertainBits       = 0,
-                            lastReceivedMessage = lastReceivedMsg
-                        )
-                    )
+                    processRxState(result, frameNs)
 
-                    // Status line
-                    val minNs   = rxIntervals.minOrNull() ?: Long.MAX_VALUE
-                    val extra = when {
-                        rxState == RxState.SYNCING && rxIntervals.size >= MIN_CLASSIFY_INTERVALS -> {
-                            val label = if (minNs < FAST_THRESHOLD_NS) "C1" else "C2"
-                            " [$label] min=${minNs/1_000_000L}ms e=$totalEdges"
+                    // ── Slow software AE ───────────────────────────────────────────────
+                    // Use the mean brightness across ALL grids as the AE signal.
+                    // The LED covers only a few grids out of the full grid, so its
+                    // flashing barely moves the whole-frame mean — no need to mask it.
+                    val meanBrightness = result.brightness.average().toFloat()
+                    aeBrightnessEma = if (aeBrightnessEma < 0f) meanBrightness
+                                      else aeBrightnessEma * (1f - AE_EMA_ALPHA) + meanBrightness * AE_EMA_ALPHA
+                    aeFrameCount++
+                    if (aeFrameCount % AE_UPDATE_FRAMES == 0) {
+                        val error    = AE_TARGET_BRIGHTNESS - aeBrightnessEma
+                        val step     = (error * 0.5f).coerceIn(-AE_MAX_STEP, AE_MAX_STEP)
+                        val newExp   = (aeExposureNs * (1f + step)).toLong()
+                                          .coerceIn(AE_MIN_EXPOSURE_NS, AE_MAX_EXPOSURE_NS)
+                        if (newExp != aeExposureNs) {
+                            aeExposureNs = newExp
+                            Log.v(TAG, "AE: brt=${String.format("%.2f", aeBrightnessEma)} " +
+                                       "step=${String.format("%+.0f", step * 100)}% " +
+                                       "exp=${newExp / 1_000_000L}ms")
                         }
-                        rxState == RxState.SYNCING ->
-                            " collecting ${rxIntervals.size}/$MIN_CLASSIFY_INTERVALS"
-                        else -> ""
+                        // Always re-assert FPS lock — torch toggles can reset Camera2CameraControl
+                        // state, and without periodic re-assertion the camera slips to ~10fps.
+                        applyExposure(aeExposureNs)
                     }
-                    stateText.text = "RX: ${rxState.name}$extra"
-                    val expMs = aeExposureNs / 1_000_000L
-                    statsText.text = "${if (lastReceivedMsg.isNotEmpty()) lastReceivedMsg else "—"} | exp=${expMs}ms"
+
+                    runOnUiThread {
+                        histogramPanel.update(result)
+                        debugOverlay.update(
+                            DebugOverlayView.DebugData(
+                                result              = result,
+                                state               = rxState.name,
+                                alpha               = currentAlpha,
+                                confThreshold       = currentConfThresh,
+                                fps                 = smoothFps,
+                                bitVote             = result.bitVote,
+                                receivedBits        = rxBits.toString(),
+                                expectedBits        = exBits.toString(),
+                                errorCount          = errorCount,
+                                totalBits           = totalBits,
+                                uncertainBits       = 0,
+                                lastReceivedMessage = lastReceivedMsg
+                            )
+                        )
+
+                        // Status line
+                        val minNs   = rxIntervals.minOrNull() ?: Long.MAX_VALUE
+                        val extra = when {
+                            rxState == RxState.SYNCING && rxIntervals.size >= MIN_CLASSIFY_INTERVALS -> {
+                                val label = if (minNs < FAST_THRESHOLD_NS) "C1" else "C2"
+                                " [$label] min=${minNs/1_000_000L}ms e=$totalEdges"
+                            }
+                            rxState == RxState.SYNCING ->
+                                " collecting ${rxIntervals.size}/$MIN_CLASSIFY_INTERVALS"
+                            else -> ""
+                        }
+                        if (autoSyncState != AutoSyncState.OFF) {
+                            stateText.text = "SYNC:${autoSyncState.name} [RX] s=$handshakeDeviceState role=$syncRole"
+                        } else {
+                            stateText.text = "RX: ${rxState.name}$extra"
+                        }
+                        syncStateText.text = if (autoSyncState != AutoSyncState.OFF)
+                            "SYNC: ${autoSyncState.name} $syncRole s=$handshakeDeviceState"
+                        else "SYNC: OFF"
+                        val expMs = aeExposureNs / 1_000_000L
+                        statsText.text = "${if (lastReceivedMsg.isNotEmpty()) lastReceivedMsg else "—"} | exp=${expMs}ms"
+                    }
+                } else {
+                    // TX phase: histogram frozen, camera preview still runs.
+                    // Re-assert FPS lock every AE_UPDATE_FRAMES frames — the AE loop above
+                    // is skipped during TX, so nothing else is calling applyExposure().
+                    aeFrameCount++
+                    if (aeFrameCount % AE_UPDATE_FRAMES == 0) {
+                        applyExposure(aeExposureNs)
+                    }
+                    runOnUiThread {
+                        stateText.text = "SYNC:${autoSyncState.name} [TX] s=$handshakeDeviceState role=$syncRole"
+                        syncStateText.text = "SYNC: ${autoSyncState.name} $syncRole s=$handshakeDeviceState"
+                        statsText.text = "— | exp=${aeExposureNs / 1_000_000L}ms"
+                    }
                 }
 
                 imageProxy.close()
@@ -548,6 +623,12 @@ class TestActivity : AppCompatActivity() {
                         lastReceivedMsg = "$label RECEIVED"
                         totalBits = totalEdges
 
+                        // Notify auto-sync state machine on main thread
+                        if (autoSyncState != AutoSyncState.OFF) {
+                            val capturedLabel = label
+                            runOnUiThread { handleAutoSyncRxResult(capturedLabel) }
+                        }
+
                         // Toast — throttled to once every 3 seconds
                         if (frameNs - lastAnnouncedNs > 3_000_000_000L) {
                             lastAnnouncedNs = frameNs
@@ -584,7 +665,7 @@ class TestActivity : AppCompatActivity() {
     // ── TX ────────────────────────────────────────────────────────────────────
 
     private fun startTx(bitPeriodNs: Long) {
-        if (isTxRunning) return
+        if (isTxRunning || autoSyncState != AutoSyncState.OFF) return
         isTxRunning = true
         txC1Button.isEnabled   = false
         txC2Button.isEnabled   = false
@@ -618,8 +699,12 @@ class TestActivity : AppCompatActivity() {
         Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
 
         // Warmup: burn the first slow torch-HAL initialisation call.
-        torch(true);  Thread.sleep(50)
-        torch(false); Thread.sleep(100)
+        // Use bit-period-aligned durations so warmup intervals match the real signal.
+        // Fixed 50ms/100ms would create intervals << 300ms that contaminate the C2 sliding
+        // window and cause the receiver to classify the entire C2 burst as C1.
+        val bitPeriodMs = bitPeriodNs / 1_000_000L
+        torch(true);  Thread.sleep(bitPeriodMs)
+        torch(false); Thread.sleep(bitPeriodMs)
 
         val start = SystemClock.elapsedRealtimeNanos()
         var i = 0L
@@ -631,9 +716,12 @@ class TestActivity : AppCompatActivity() {
 
         torch(false)
         runOnUiThread {
-            txC1Button.isEnabled   = true
-            txC2Button.isEnabled   = true
-            stopTxButton.isEnabled = false
+            // Only re-enable manual TX buttons if auto-sync is not active.
+            if (autoSyncState == AutoSyncState.OFF) {
+                txC1Button.isEnabled   = true
+                txC2Button.isEnabled   = true
+                stopTxButton.isEnabled = false
+            }
         }
     }
 
@@ -643,8 +731,10 @@ class TestActivity : AppCompatActivity() {
         Camera2CameraControl.from(ctrl).setCaptureRequestOptions(
             CaptureRequestOptions.Builder()
                 .setCaptureRequestOption(CaptureRequest.SENSOR_EXPOSURE_TIME, exposureNs)
-                // Re-assert 20 fps every time: Camera2CameraControl options override
-                // Camera2Interop, so the FPS lock must be repeated here or it can slip.
+                // SENSOR_FRAME_DURATION is the authoritative frame-period field when AE is off.
+                // Re-assert it (and the FPS range hint) every call: Camera2CameraControl options
+                // override Camera2Interop and can be cleared by torch/session events.
+                .setCaptureRequestOption(CaptureRequest.SENSOR_FRAME_DURATION, SENSOR_FRAME_DURATION_NS)
                 .setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(20, 20))
                 .build()
         )
@@ -654,5 +744,185 @@ class TestActivity : AppCompatActivity() {
 
     private fun spinWait(targetNs: Long) {
         while (isTxRunning && SystemClock.elapsedRealtimeNanos() < targetNs) { /* busy-wait */ }
+    }
+
+    // ── Auto-sync state machine ────────────────────────────────────────────────
+
+    /**
+     * Called on main thread each time a stable C1/C2 classification is made during auto-sync.
+     *
+     * IMPORTANT: rxPhaseHandled and cancelSyncRxTimeout() are only committed AFTER the label
+     * is confirmed to match.  If the wrong signal arrives (e.g. C2 during PROBING), this
+     * function returns early without touching rxPhaseHandled or the RX timeout, so the RX
+     * phase continues and the device does not get stuck.
+     */
+    private fun handleAutoSyncRxResult(label: String) {
+        if (rxPhaseHandled) return
+
+        // Determine the expected label for this RX state.  Wrong label → keep waiting.
+        val expected = when (autoSyncState) {
+            AutoSyncState.PROBING, AutoSyncState.WAIT_SYNC -> "C1"
+            AutoSyncState.WAIT_ACK, AutoSyncState.WAIT_FINAL -> "C2"
+            else -> return  // not an RX state
+        }
+        if (label != expected) return   // wrong signal — timeout will still fire normally
+
+        // Correct label: commit to this RX window.
+        rxPhaseHandled = true
+        cancelSyncRxTimeout()
+
+        when (autoSyncState) {
+            AutoSyncState.PROBING -> {
+                // Responder path: received initiator's C1.
+                // Wait SYNC_RESPONSE_DELAY_MS so the initiator's TX window expires before
+                // our C2 starts (classification fires ~600ms into a 2000ms window).
+                syncRole = "RESP"
+                handshakeDeviceState = 1
+                autoSyncState = AutoSyncState.SEND_ACK
+                syncHandler.postDelayed({
+                    if (autoSyncState != AutoSyncState.SEND_ACK) return@postDelayed
+                    startSyncTxPhase(C2_BIT_PERIOD_NS, SYNC_TX_WINDOW_MS) {
+                        autoSyncState = AutoSyncState.WAIT_FINAL
+                        startSyncRxPhase(SYNC_RX_WINDOW_MS) { beginProbing() }
+                    }
+                }, SYNC_RESPONSE_DELAY_MS)
+            }
+            AutoSyncState.WAIT_ACK -> {
+                // Initiator path: received responder's C2 ACK.
+                handshakeDeviceState = 2
+                autoSyncState = AutoSyncState.SEND_FINAL
+                syncHandler.postDelayed({
+                    if (autoSyncState != AutoSyncState.SEND_FINAL) return@postDelayed
+                    startSyncTxPhase(C2_BIT_PERIOD_NS, SYNC_TX_WINDOW_MS) {
+                        autoSyncState = AutoSyncState.WAIT_SYNC
+                        startSyncRxPhase(SYNC_RX_WINDOW_MS) { beginProbing() }
+                    }
+                }, SYNC_RESPONSE_DELAY_MS)
+            }
+            AutoSyncState.WAIT_FINAL -> {
+                // Responder path: received initiator's final C2.
+                handshakeDeviceState = 2
+                autoSyncState = AutoSyncState.SEND_SYNC
+                syncHandler.postDelayed({
+                    if (autoSyncState != AutoSyncState.SEND_SYNC) return@postDelayed
+                    startSyncTxPhase(BIT_PERIOD_NS, SYNC_BURST_MS) {
+                        autoSyncState = AutoSyncState.SYNCED
+                        startSyncTxPhaseForever(BIT_PERIOD_NS)
+                    }
+                }, SYNC_RESPONSE_DELAY_MS)
+            }
+            AutoSyncState.WAIT_SYNC -> {
+                // Initiator path: detected responder's C1 sync signal → start sync flash.
+                // No delay: SYNCED means both devices TX simultaneously.
+                autoSyncState = AutoSyncState.SYNCED
+                startSyncTxPhaseForever(BIT_PERIOD_NS)
+            }
+            else -> { /* unreachable — guarded above */ }
+        }
+    }
+
+    private fun cancelSyncRxTimeout() {
+        syncRxTimeoutRunnable?.let { syncHandler.removeCallbacks(it) }
+        syncRxTimeoutRunnable = null
+    }
+
+    /** Switch to RX mode for [timeoutMs] ms; call [onTimeout] if no classification fires. */
+    private fun startSyncRxPhase(timeoutMs: Long, onTimeout: () -> Unit) {
+        rxPhaseHandled = false
+        clearToIdle()
+        synchronized(analyzerLock) { analyzer?.reset() }
+        val r = Runnable {
+            if (!rxPhaseHandled) {
+                Log.v(TAG, "SYNC RX timeout in state $autoSyncState")
+                onTimeout()
+            }
+        }
+        syncRxTimeoutRunnable = r
+        syncHandler.postDelayed(r, timeoutMs)
+    }
+
+    /** Start TX at [bitPeriodNs] for [durationMs] ms, then stop TX and invoke [onComplete]. */
+    private fun startSyncTxPhase(bitPeriodNs: Long, durationMs: Long, onComplete: () -> Unit) {
+        syncIsTxActive = true
+        if (!isTxRunning) {
+            isTxRunning = true
+            txThread = HandlerThread("SyncTX").also { it.start() }
+            txHandler = Handler(txThread!!.looper)
+            txHandler!!.post { txLoop(bitPeriodNs) }
+        }
+        syncHandler.postDelayed({
+            if (autoSyncState == AutoSyncState.OFF) return@postDelayed
+            isTxRunning = false
+            cameraControl?.enableTorch(false)
+            txThread?.quitSafely()
+            txThread = null
+            txHandler = null
+            syncIsTxActive = false
+            clearToIdle()
+            synchronized(analyzerLock) { analyzer?.reset() }
+            onComplete()
+        }, durationMs)
+    }
+
+    /** Start TX at [bitPeriodNs] and keep running until stopAutoSync() is called. */
+    private fun startSyncTxPhaseForever(bitPeriodNs: Long) {
+        syncIsTxActive = true
+        if (!isTxRunning) {
+            isTxRunning = true
+            txThread = HandlerThread("SyncTX").also { it.start() }
+            txHandler = Handler(txThread!!.looper)
+            txHandler!!.post { txLoop(bitPeriodNs) }
+        }
+    }
+
+    /** Random-backoff probe: randomly choose to TX C1 or listen for C1. */
+    private fun beginProbing() {
+        if (autoSyncState == AutoSyncState.OFF) return
+        handshakeDeviceState = 0
+        syncRole = "?"
+        autoSyncState = AutoSyncState.PROBING
+        val delay = (Math.random() * SYNC_MAX_RETRY_DELAY_MS).toLong()
+        Log.v(TAG, "SYNC beginProbing: delay=${delay}ms")
+        syncHandler.postDelayed({
+            if (autoSyncState != AutoSyncState.PROBING) return@postDelayed
+            val txFirst = Math.random() < 0.5
+            if (txFirst) {
+                syncRole = "INIT"
+                startSyncTxPhase(BIT_PERIOD_NS, SYNC_TX_WINDOW_MS) {
+                    autoSyncState = AutoSyncState.WAIT_ACK
+                    startSyncRxPhase(SYNC_RX_WINDOW_MS) { beginProbing() }
+                }
+            } else {
+                // Stay in RX — handleAutoSyncRxResult() fires when C1 is detected
+                startSyncRxPhase(SYNC_RX_WINDOW_MS) { beginProbing() }
+            }
+        }, delay)
+    }
+
+    private fun startAutoSync() {
+        if (autoSyncState != AutoSyncState.OFF) return
+        stopTx()                          // cancel any manual TX in progress
+        resetRx()
+        autoSyncState = AutoSyncState.PROBING
+        autoSyncButton.isEnabled = false
+        stopSyncButton.isEnabled = true
+        beginProbing()
+    }
+
+    private fun stopAutoSync() {
+        cancelSyncRxTimeout()
+        syncHandler.removeCallbacksAndMessages(null)
+        isTxRunning = false
+        cameraControl?.enableTorch(false)
+        txThread?.quitSafely()
+        txThread = null
+        txHandler = null
+        syncIsTxActive = false
+        autoSyncState = AutoSyncState.OFF
+        handshakeDeviceState = 0
+        syncRole = "?"
+        resetRx()
+        autoSyncButton.isEnabled = true
+        stopSyncButton.isEnabled = false
     }
 }
