@@ -2,6 +2,8 @@ package com.example.underwaterlink
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
+import android.graphics.Color
 import android.hardware.camera2.CaptureRequest
 import android.os.Bundle
 import android.os.Handler
@@ -19,7 +21,9 @@ import android.widget.Toast
 import android.widget.ToggleButton
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.camera.camera2.interop.Camera2CameraControl
 import androidx.camera.camera2.interop.Camera2Interop
+import androidx.camera.camera2.interop.CaptureRequestOptions
 import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.CameraControl
 import androidx.camera.core.CameraSelector
@@ -69,12 +73,21 @@ class TestActivity : AppCompatActivity() {
 
         private const val VOTE_THRESH = 0.25f
 
-        // ── Manual camera exposure (AE disabled) ───────────────────────────────
-        // Disabling AE prevents the camera from adapting to torch flashes (which
-        // compresses bright/dark amplitude → bitVote → 0 → detection fails).
-        // Tune for ambient: lower outdoors (e.g. 8ms), higher in dark (e.g. 33ms).
-        private const val MANUAL_EXPOSURE_NS = 16_000_000L  // 16ms
-        private const val MANUAL_ISO         = 800
+        // ── Camera exposure ────────────────────────────────────────────────────
+        // We keep AE_MODE_OFF so the camera never auto-adapts to torch flashes
+        // (built-in AE compensates within 1-3 frames → bitVote collapses → detection fails).
+        // Instead we run our own slow software AE loop that shifts exposure by at most
+        // AE_MAX_STEP per update, once every AE_UPDATE_FRAMES frames.  This is slow
+        // enough that the Otsu histogram can track the gradual change without losing
+        // its bimodal structure.
+        private const val INITIAL_EXPOSURE_NS  = 16_000_000L   // 16ms — starting point
+        private const val MANUAL_ISO           = 800
+        private const val AE_TARGET_BRIGHTNESS = 0.40f         // target mean scene brightness
+        private const val AE_UPDATE_FRAMES     = 30            // update interval: ~1.5s at 20fps
+        private const val AE_EMA_ALPHA         = 0.05f         // EMA smoothing (~1s time constant)
+        private const val AE_MAX_STEP          = 0.15f         // max ±15% change per update
+        private const val AE_MIN_EXPOSURE_NS   = 4_000_000L    // 4ms  floor
+        private const val AE_MAX_EXPOSURE_NS   = 100_000_000L  // 100ms ceiling
     }
 
     // ── RX state machine (2-state, fully async) ────────────────────────────────
@@ -106,6 +119,23 @@ class TestActivity : AppCompatActivity() {
     private val exBits   = StringBuilder()
     private var errorCount = 0
     private var totalBits  = 0
+
+    // ── Zoom ──────────────────────────────────────────────────────────────────
+
+    // setZoomRatio() applies to both Preview and ImageAnalysis frames — no crop needed.
+    private var currentZoom = 1
+
+    private lateinit var zoom1xButton: Button
+    private lateinit var zoom2xButton: Button
+    private lateinit var zoom4xButton: Button
+    private lateinit var zoomLabel:    TextView
+
+    // ── Slow auto-exposure state (camera executor thread, except aeExposureNs) ──
+    // All fields written only from the analysis callback; aeExposureNs is also
+    // read from the UI thread for display, hence @Volatile.
+    @Volatile private var aeExposureNs  = INITIAL_EXPOSURE_NS
+    private var aeBrightnessEma         = -1f   // negative = uninitialised
+    private var aeFrameCount            = 0
 
     // ── GridAnalyzer ──────────────────────────────────────────────────────────
 
@@ -165,6 +195,7 @@ class TestActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setContentView(R.layout.activity_test)
+        CharCode.load(this)
 
         previewView    = findViewById(R.id.testPreviewView)
         debugOverlay   = findViewById(R.id.testDebugOverlay)
@@ -181,9 +212,14 @@ class TestActivity : AppCompatActivity() {
         gridValueText  = findViewById(R.id.gridValueText)
         modeToggle     = findViewById(R.id.modeToggle)
         histogramPanel = findViewById(R.id.histogramPanel)
+        zoom1xButton   = findViewById(R.id.zoom1xButton)
+        zoom2xButton   = findViewById(R.id.zoom2xButton)
+        zoom4xButton   = findViewById(R.id.zoom4xButton)
+        zoomLabel      = findViewById(R.id.zoomLabel)
 
         setupSliders()
         setupButtons()
+        setupZoom()
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
             == PackageManager.PERMISSION_GRANTED
@@ -276,6 +312,34 @@ class TestActivity : AppCompatActivity() {
         findViewById<Button>(R.id.testResetRxButton).setOnClickListener { resetRx() }
     }
 
+    // ── Zoom ──────────────────────────────────────────────────────────────────
+
+    private fun setupZoom() {
+        updateZoomButtons()
+        fun applyZoom(zoom: Int) {
+            if (currentZoom == zoom) return
+            currentZoom = zoom
+            // Reset histogram so stale bimodal state doesn't confuse classification.
+            synchronized(analyzerLock) { analyzer?.reset() }
+            resetRx()
+            updateZoomButtons()
+            zoomLabel.text = "${currentZoom}×"
+            // setZoomRatio applies to ImageAnalysis frames too — no camera restart needed.
+            cameraControl?.setZoomRatio(zoom.toFloat())
+        }
+        zoom1xButton.setOnClickListener { applyZoom(1) }
+        zoom2xButton.setOnClickListener { applyZoom(2) }
+        zoom4xButton.setOnClickListener { applyZoom(4) }
+    }
+
+    private fun updateZoomButtons() {
+        val active   = ColorStateList.valueOf(Color.parseColor("#1B5E20"))
+        val inactive = ColorStateList.valueOf(Color.parseColor("#333333"))
+        zoom1xButton.backgroundTintList = if (currentZoom == 1) active else inactive
+        zoom2xButton.backgroundTintList = if (currentZoom == 2) active else inactive
+        zoom4xButton.backgroundTintList = if (currentZoom == 4) active else inactive
+    }
+
     // ── Camera ────────────────────────────────────────────────────────────────
 
     @OptIn(ExperimentalCamera2Interop::class)
@@ -300,12 +364,12 @@ class TestActivity : AppCompatActivity() {
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
 
-            // Disable AE so the camera cannot adapt to torch flashes.
-            // When AE is ON it compensates within 1-3 frames → bitVote collapses → no edges.
+            // AE_MODE_OFF: we control exposure manually so the camera never auto-compensates
+            // for torch flashes.  Our slow software AE loop takes over from here.
             Camera2Interop.Extender(analysisBuilder)
                 .setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(20, 20))
                 .setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
-                .setCaptureRequestOption(CaptureRequest.SENSOR_EXPOSURE_TIME, MANUAL_EXPOSURE_NS)
+                .setCaptureRequestOption(CaptureRequest.SENSOR_EXPOSURE_TIME, aeExposureNs)
                 .setCaptureRequestOption(CaptureRequest.SENSOR_SENSITIVITY, MANUAL_ISO)
                 .setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
 
@@ -351,6 +415,28 @@ class TestActivity : AppCompatActivity() {
 
                 processRxState(result, frameNs)
 
+                // ── Slow software AE ───────────────────────────────────────────────
+                // Use the mean brightness across ALL grids as the AE signal.
+                // The LED covers only a few grids out of the full grid, so its
+                // flashing barely moves the whole-frame mean — no need to mask it.
+                val meanBrightness = result.brightness.average().toFloat()
+                aeBrightnessEma = if (aeBrightnessEma < 0f) meanBrightness          // first frame
+                                  else aeBrightnessEma * (1f - AE_EMA_ALPHA) + meanBrightness * AE_EMA_ALPHA
+                aeFrameCount++
+                if (aeFrameCount % AE_UPDATE_FRAMES == 0) {
+                    val error    = AE_TARGET_BRIGHTNESS - aeBrightnessEma
+                    val step     = (error * 0.5f).coerceIn(-AE_MAX_STEP, AE_MAX_STEP)
+                    val newExp   = (aeExposureNs * (1f + step)).toLong()
+                                      .coerceIn(AE_MIN_EXPOSURE_NS, AE_MAX_EXPOSURE_NS)
+                    if (newExp != aeExposureNs) {
+                        aeExposureNs = newExp
+                        applyExposure(newExp)
+                        Log.v(TAG, "AE: brt=${String.format("%.2f", aeBrightnessEma)} " +
+                                   "step=${String.format("%+.0f", step * 100)}% " +
+                                   "exp=${newExp / 1_000_000L}ms")
+                    }
+                }
+
                 runOnUiThread {
                     histogramPanel.update(result)
                     debugOverlay.update(
@@ -382,7 +468,8 @@ class TestActivity : AppCompatActivity() {
                         else -> ""
                     }
                     stateText.text = "RX: ${rxState.name}$extra"
-                    statsText.text = if (lastReceivedMsg.isNotEmpty()) lastReceivedMsg else "—"
+                    val expMs = aeExposureNs / 1_000_000L
+                    statsText.text = "${if (lastReceivedMsg.isNotEmpty()) lastReceivedMsg else "—"} | exp=${expMs}ms"
                 }
 
                 imageProxy.close()
@@ -394,6 +481,7 @@ class TestActivity : AppCompatActivity() {
                     this, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis
                 )
                 cameraControl = camera.cameraControl
+                if (currentZoom != 1) cameraControl?.setZoomRatio(currentZoom.toFloat())
             } catch (e: Exception) {
                 Log.e(TAG, "Camera bind failed", e)
             }
@@ -547,6 +635,19 @@ class TestActivity : AppCompatActivity() {
             txC2Button.isEnabled   = true
             stopTxButton.isEnabled = false
         }
+    }
+
+    @OptIn(ExperimentalCamera2Interop::class)
+    private fun applyExposure(exposureNs: Long) {
+        val ctrl = cameraControl ?: return
+        Camera2CameraControl.from(ctrl).setCaptureRequestOptions(
+            CaptureRequestOptions.Builder()
+                .setCaptureRequestOption(CaptureRequest.SENSOR_EXPOSURE_TIME, exposureNs)
+                // Re-assert 20 fps every time: Camera2CameraControl options override
+                // Camera2Interop, so the FPS lock must be repeated here or it can slip.
+                .setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(20, 20))
+                .build()
+        )
     }
 
     private fun torch(on: Boolean) { cameraControl?.enableTorch(on) }
