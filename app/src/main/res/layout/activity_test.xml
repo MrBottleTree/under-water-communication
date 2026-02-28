@@ -1,25 +1,296 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Root: vertical LinearLayout so panels never overlap the camera area -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:background="#000000">
+    android:background="#090E14"
+    android:orientation="horizontal"
+    android:padding="12dp"
+    android:weightSum="3">
 
-    <!-- Camera preview + debug overlay: takes all remaining height -->
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="1"
+        android:background="#111A24"
+        android:orientation="vertical"
+        android:padding="12dp">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="10dp"
+            android:text="Controls"
+            android:textColor="#E6EEF9"
+            android:textSize="18sp"
+            android:textStyle="bold" />
+
+        <ScrollView
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:fillViewport="true">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="8dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginEnd="6dp"
+                        android:fontFamily="monospace"
+                        android:text="zoom"
+                        android:textColor="#9AA7B2"
+                        android:textSize="11sp" />
+
+                    <Button
+                        android:id="@+id/zoom1xButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="34dp"
+                        android:backgroundTint="#1B5E20"
+                        android:paddingStart="14dp"
+                        android:paddingEnd="14dp"
+                        android:text="1x"
+                        android:textSize="12sp" />
+
+                    <Button
+                        android:id="@+id/zoom2xButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="34dp"
+                        android:layout_marginStart="4dp"
+                        android:backgroundTint="#2A3A4B"
+                        android:paddingStart="14dp"
+                        android:paddingEnd="14dp"
+                        android:text="2x"
+                        android:textSize="12sp" />
+
+                    <Button
+                        android:id="@+id/zoom4xButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="34dp"
+                        android:layout_marginStart="4dp"
+                        android:backgroundTint="#2A3A4B"
+                        android:paddingStart="14dp"
+                        android:paddingEnd="14dp"
+                        android:text="4x"
+                        android:textSize="12sp" />
+
+                    <TextView
+                        android:id="@+id/zoomLabel"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="8dp"
+                        android:layout_weight="1"
+                        android:fontFamily="monospace"
+                        android:text="1x (640x480)"
+                        android:textColor="#E6EEF9"
+                        android:textSize="11sp" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="8dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <Button
+                        android:id="@+id/testTxC1Button"
+                        android:layout_width="wrap_content"
+                        android:layout_height="34dp"
+                        android:backgroundTint="#1565C0"
+                        android:paddingStart="12dp"
+                        android:paddingEnd="12dp"
+                        android:text="TX C1"
+                        android:textSize="12sp" />
+
+                    <Button
+                        android:id="@+id/testTxC2Button"
+                        android:layout_width="wrap_content"
+                        android:layout_height="34dp"
+                        android:layout_marginStart="6dp"
+                        android:backgroundTint="#0D47A1"
+                        android:paddingStart="12dp"
+                        android:paddingEnd="12dp"
+                        android:text="TX C2"
+                        android:textSize="12sp" />
+
+                    <Button
+                        android:id="@+id/testStopTxButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="34dp"
+                        android:layout_marginStart="6dp"
+                        android:backgroundTint="#B71C1C"
+                        android:enabled="false"
+                        android:paddingStart="10dp"
+                        android:paddingEnd="10dp"
+                        android:text="STOP TX"
+                        android:textSize="12sp" />
+                </LinearLayout>
+
+                <Button
+                    android:id="@+id/testResetRxButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="34dp"
+                    android:layout_marginBottom="8dp"
+                    android:backgroundTint="#4E342E"
+                    android:text="RESET RX"
+                    android:textSize="12sp" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="8dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <ToggleButton
+                        android:id="@+id/modeToggle"
+                        android:layout_width="70dp"
+                        android:layout_height="34dp"
+                        android:backgroundTint="#2A3A4B"
+                        android:checked="false"
+                        android:textOff="A dec"
+                        android:textOn="N win"
+                        android:textSize="10sp" />
+
+                    <SeekBar
+                        android:id="@+id/alphaSeekBar"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:max="999"
+                        android:progress="49" />
+
+                    <TextView
+                        android:id="@+id/alphaValueText"
+                        android:layout_width="70dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="6dp"
+                        android:fontFamily="monospace"
+                        android:text="A=0.050"
+                        android:textColor="#E6EEF9"
+                        android:textSize="12sp" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="8dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:layout_width="70dp"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="monospace"
+                        android:text="conf thr"
+                        android:textColor="#9AA7B2"
+                        android:textSize="11sp" />
+
+                    <SeekBar
+                        android:id="@+id/confSeekBar"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:max="100"
+                        android:progress="15" />
+
+                    <TextView
+                        android:id="@+id/confValueText"
+                        android:layout_width="70dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="6dp"
+                        android:fontFamily="monospace"
+                        android:text="0.150"
+                        android:textColor="#E6EEF9"
+                        android:textSize="12sp" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="8dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:layout_width="70dp"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="monospace"
+                        android:text="grid px"
+                        android:textColor="#9AA7B2"
+                        android:textSize="11sp" />
+
+                    <SeekBar
+                        android:id="@+id/gridSeekBar"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:max="3"
+                        android:progress="1" />
+
+                    <TextView
+                        android:id="@+id/gridValueText"
+                        android:layout_width="70dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="6dp"
+                        android:fontFamily="monospace"
+                        android:text="8px"
+                        android:textColor="#E6EEF9"
+                        android:textSize="12sp" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <Button
+                        android:id="@+id/autoSyncButton"
+                        android:layout_width="0dp"
+                        android:layout_height="34dp"
+                        android:layout_weight="1"
+                        android:backgroundTint="#004D40"
+                        android:text="AUTO SYNC"
+                        android:textSize="11sp" />
+
+                    <Button
+                        android:id="@+id/stopSyncButton"
+                        android:layout_width="0dp"
+                        android:layout_height="34dp"
+                        android:layout_marginStart="4dp"
+                        android:layout_weight="1"
+                        android:backgroundTint="#B71C1C"
+                        android:text="STOP SYNC"
+                        android:textSize="11sp" />
+                </LinearLayout>
+            </LinearLayout>
+        </ScrollView>
+    </LinearLayout>
+
     <FrameLayout
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1">
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="1"
+        android:background="#0E1722">
 
         <androidx.camera.view.PreviewView
             android:id="@+id/testPreviewView"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
-            app:scaleType="fitCenter" />
+            app:scaleType="fillCenter" />
 
-        <!-- Overlay: same size as the FrameLayout, non-interactive -->
         <com.example.underwaterlink.DebugOverlayView
             android:id="@+id/testDebugOverlay"
             android:layout_width="match_parent"
@@ -27,320 +298,76 @@
             android:clickable="false"
             android:focusable="false" />
 
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|start"
+            android:layout_margin="12dp"
+            android:background="#66000000"
+            android:paddingStart="10dp"
+            android:paddingTop="6dp"
+            android:paddingEnd="10dp"
+            android:paddingBottom="6dp"
+            android:text="Camera"
+            android:textColor="#E6EEF9"
+            android:textSize="18sp"
+            android:textStyle="bold" />
     </FrameLayout>
 
-    <!-- ── Histogram panel: below camera, above controls, never overlaps ── -->
-    <com.example.underwaterlink.HistogramPanelView
-        android:id="@+id/histogramPanel"
-        android:layout_width="match_parent"
-        android:layout_height="50dp"
-        android:background="#121212" />
-
-    <!-- ── Control panel (fixed height, no overlap) ── -->
     <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:background="#CC000000"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="1"
+        android:background="#111A24"
         android:orientation="vertical"
-        android:paddingStart="8dp"
-        android:paddingEnd="8dp"
-        android:paddingTop="4dp"
-        android:paddingBottom="4dp">
+        android:padding="12dp">
 
-        <!-- Row 0: Digital zoom (capture at N× resolution, crop centre to 480p) -->
-        <LinearLayout
+        <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:gravity="center_vertical"
-            android:layout_marginBottom="2dp">
+            android:layout_marginBottom="10dp"
+            android:text="Status / Histogram"
+            android:textColor="#E6EEF9"
+            android:textSize="18sp"
+            android:textStyle="bold" />
 
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="zoom"
-                android:textColor="#AAAAAA"
-                android:textSize="11sp"
-                android:fontFamily="monospace"
-                android:layout_marginEnd="6dp" />
-
-            <Button
-                android:id="@+id/zoom1xButton"
-                android:layout_width="wrap_content"
-                android:layout_height="30dp"
-                android:text="1×"
-                android:textSize="12sp"
-                android:backgroundTint="#1B5E20"
-                android:paddingStart="16dp"
-                android:paddingEnd="16dp" />
-
-            <Button
-                android:id="@+id/zoom2xButton"
-                android:layout_width="wrap_content"
-                android:layout_height="30dp"
-                android:text="2×"
-                android:textSize="12sp"
-                android:backgroundTint="#333333"
-                android:paddingStart="16dp"
-                android:paddingEnd="16dp"
-                android:layout_marginStart="4dp" />
-
-            <Button
-                android:id="@+id/zoom4xButton"
-                android:layout_width="wrap_content"
-                android:layout_height="30dp"
-                android:text="4×"
-                android:textSize="12sp"
-                android:backgroundTint="#333333"
-                android:paddingStart="16dp"
-                android:paddingEnd="16dp"
-                android:layout_marginStart="4dp" />
-
-            <TextView
-                android:id="@+id/zoomLabel"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:layout_marginStart="8dp"
-                android:text="1× (640×480)"
-                android:textColor="#FFFFFF"
-                android:textSize="11sp"
-                android:fontFamily="monospace" />
-
-        </LinearLayout>
-
-        <!-- Row 1: TX buttons + state + stats -->
-        <LinearLayout
+        <TextView
+            android:id="@+id/testStateText"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:gravity="center_vertical">
+            android:fontFamily="monospace"
+            android:text="RX: IDLE"
+            android:textColor="#00E676"
+            android:textSize="13sp"
+            android:textStyle="bold" />
 
-            <Button
-                android:id="@+id/testTxC1Button"
-                android:layout_width="wrap_content"
-                android:layout_height="34dp"
-                android:text="TX C1"
-                android:textSize="12sp"
-                android:backgroundTint="#1565C0"
-                android:paddingStart="14dp"
-                android:paddingEnd="14dp" />
-
-            <Button
-                android:id="@+id/testTxC2Button"
-                android:layout_width="wrap_content"
-                android:layout_height="34dp"
-                android:text="TX C2"
-                android:textSize="12sp"
-                android:backgroundTint="#0D47A1"
-                android:paddingStart="14dp"
-                android:paddingEnd="14dp"
-                android:layout_marginStart="6dp" />
-
-            <Button
-                android:id="@+id/testStopTxButton"
-                android:layout_width="wrap_content"
-                android:layout_height="34dp"
-                android:text="STOP TX"
-                android:textSize="12sp"
-                android:backgroundTint="#B71C1C"
-                android:enabled="false"
-                android:paddingStart="10dp"
-                android:paddingEnd="10dp"
-                android:layout_marginStart="6dp" />
-
-            <Button
-                android:id="@+id/testResetRxButton"
-                android:layout_width="wrap_content"
-                android:layout_height="34dp"
-                android:text="RESET RX"
-                android:textSize="12sp"
-                android:backgroundTint="#4E342E"
-                android:paddingStart="10dp"
-                android:paddingEnd="10dp"
-                android:layout_marginStart="6dp" />
-
-            <TextView
-                android:id="@+id/testStateText"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:layout_marginStart="10dp"
-                android:text="RX: IDLE"
-                android:textColor="#00FF00"
-                android:textSize="13sp"
-                android:fontFamily="monospace"
-                android:textStyle="bold" />
-
-            <TextView
-                android:id="@+id/testStatsText"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginEnd="4dp"
-                android:text="ERR 0/0"
-                android:textColor="#FFEB3B"
-                android:textSize="13sp"
-                android:fontFamily="monospace" />
-
-        </LinearLayout>
-
-        <!-- Row 2: Histogram mode toggle + slider (shared for α and N) -->
-        <LinearLayout
+        <TextView
+            android:id="@+id/testStatsText"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:gravity="center_vertical"
-            android:layout_marginTop="2dp">
+            android:layout_marginTop="6dp"
+            android:fontFamily="monospace"
+            android:text="ERR 0/0"
+            android:textColor="#FFEE58"
+            android:textSize="13sp" />
 
-            <!-- Toggle switches between α-decay and rolling-window modes.
-                 OFF = alpha decay,  ON = rolling window of N frames -->
-            <ToggleButton
-                android:id="@+id/modeToggle"
-                android:layout_width="62dp"
-                android:layout_height="30dp"
-                android:textOff="α dec"
-                android:textOn="N win"
-                android:textSize="10sp"
-                android:checked="false"
-                android:backgroundTint="#333333" />
-
-            <!-- Dual-purpose SeekBar: α-decay mode → (p+1)/1000 ; N-window mode → p+1 -->
-            <SeekBar
-                android:id="@+id/alphaSeekBar"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:max="999"
-                android:progress="49" />
-
-            <TextView
-                android:id="@+id/alphaValueText"
-                android:layout_width="64dp"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="6dp"
-                android:text="α=0.050"
-                android:textColor="#FFFFFF"
-                android:textSize="12sp"
-                android:fontFamily="monospace" />
-
-        </LinearLayout>
-
-        <!-- Row 3: Confidence threshold slider (0.00 – 1.00) -->
-        <LinearLayout
+        <TextView
+            android:id="@+id/syncStateText"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:gravity="center_vertical"
-            android:layout_marginTop="2dp">
+            android:layout_marginTop="6dp"
+            android:fontFamily="monospace"
+            android:text="SYNC: OFF"
+            android:textColor="#00E5FF"
+            android:textSize="12sp" />
 
-            <TextView
-                android:layout_width="62dp"
-                android:layout_height="wrap_content"
-                android:text="conf thr"
-                android:textColor="#AAAAAA"
-                android:textSize="11sp"
-                android:fontFamily="monospace" />
-
-            <!-- progress 0–100 → conf = p/100 = 0.00 to 1.00 -->
-            <SeekBar
-                android:id="@+id/confSeekBar"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:max="100"
-                android:progress="15" />
-
-            <TextView
-                android:id="@+id/confValueText"
-                android:layout_width="64dp"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="6dp"
-                android:text="0.150"
-                android:textColor="#FFFFFF"
-                android:textSize="12sp"
-                android:fontFamily="monospace" />
-
-        </LinearLayout>
-
-        <!-- Row 4: Grid size slider (4, 8, 16, 32 px) -->
-        <LinearLayout
+        <com.example.underwaterlink.HistogramPanelView
+            android:id="@+id/histogramPanel"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:gravity="center_vertical"
-            android:layout_marginTop="2dp">
-
-            <TextView
-                android:layout_width="62dp"
-                android:layout_height="wrap_content"
-                android:text="grid px"
-                android:textColor="#AAAAAA"
-                android:textSize="11sp"
-                android:fontFamily="monospace" />
-
-            <!-- progress 0–3 → gridSize = 4 << p = 4,8,16,32 -->
-            <SeekBar
-                android:id="@+id/gridSeekBar"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:max="3"
-                android:progress="1" />
-
-            <TextView
-                android:id="@+id/gridValueText"
-                android:layout_width="64dp"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="6dp"
-                android:text="8px"
-                android:textColor="#FFFFFF"
-                android:textSize="12sp"
-                android:fontFamily="monospace" />
-
-        </LinearLayout>
-
-        <!-- Row 5: Auto-sync controls -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:gravity="center_vertical"
-            android:layout_marginTop="2dp">
-
-            <Button
-                android:id="@+id/autoSyncButton"
-                android:layout_width="0dp"
-                android:layout_height="34dp"
-                android:layout_weight="1"
-                android:text="AUTO SYNC"
-                android:textSize="11sp"
-                android:backgroundTint="#004D40"
-                android:padding="4dp" />
-
-            <Button
-                android:id="@+id/stopSyncButton"
-                android:layout_width="0dp"
-                android:layout_height="34dp"
-                android:layout_weight="1"
-                android:text="STOP SYNC"
-                android:textSize="11sp"
-                android:backgroundTint="#B71C1C"
-                android:padding="4dp"
-                android:layout_marginStart="4dp" />
-
-            <TextView
-                android:id="@+id/syncStateText"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="2"
-                android:layout_marginStart="8dp"
-                android:text="SYNC: OFF"
-                android:textColor="#00E5FF"
-                android:textSize="11sp"
-                android:fontFamily="monospace" />
-
-        </LinearLayout>
-
+            android:layout_height="0dp"
+            android:layout_marginTop="12dp"
+            android:layout_weight="1"
+            android:background="#121212" />
     </LinearLayout>
 
 </LinearLayout>
