@@ -240,6 +240,7 @@ class TestActivity : AppCompatActivity() {
         CharCode.load(this)
 
         previewView    = findViewById(R.id.testPreviewView)
+        previewView.scaleType = PreviewView.ScaleType.FILL_CENTER
         debugOverlay   = findViewById(R.id.testDebugOverlay)
         stateText      = findViewById(R.id.testStateText)
         statsText      = findViewById(R.id.testStatsText)
