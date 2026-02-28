@@ -223,7 +223,6 @@ class TestActivity : AppCompatActivity() {
     private lateinit var alphaParamInput: EditText
     private lateinit var confParamInput:  EditText
     private lateinit var gridParamInput:  EditText
-    private lateinit var histogramPanel: HistogramPanelView
     private lateinit var autoSyncButton: Button
     private lateinit var stopSyncButton: Button
     private lateinit var syncStateText:  TextView
@@ -265,7 +264,6 @@ class TestActivity : AppCompatActivity() {
         alphaParamInput = findViewById(R.id.alphaParamInput)
         confParamInput  = findViewById(R.id.confParamInput)
         gridParamInput  = findViewById(R.id.gridParamInput)
-        histogramPanel = findViewById(R.id.histogramPanel)
         autoSyncButton = findViewById(R.id.autoSyncButton)
         stopSyncButton = findViewById(R.id.stopSyncButton)
         syncStateText  = findViewById(R.id.syncStateText)
@@ -572,7 +570,6 @@ class TestActivity : AppCompatActivity() {
                     }
 
                     runOnUiThread {
-                        histogramPanel.update(result)
                         debugOverlay.update(
                             DebugOverlayView.DebugData(
                                 result              = result,
