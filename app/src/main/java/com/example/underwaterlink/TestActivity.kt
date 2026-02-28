@@ -227,7 +227,10 @@ class TestActivity : AppCompatActivity() {
     private lateinit var autoSyncButton: Button
     private lateinit var stopSyncButton: Button
     private lateinit var syncStateText:  TextView
+    private lateinit var decodedWindowText: TextView
     private var syncPayloadMessage: String = ""
+    private var lastReceivedSignal: String = ""
+    private val decodedCharWindow = ArrayDeque<Char>()
 
     // ── Permission ────────────────────────────────────────────────────────────
 
@@ -265,6 +268,7 @@ class TestActivity : AppCompatActivity() {
         autoSyncButton = findViewById(R.id.autoSyncButton)
         stopSyncButton = findViewById(R.id.stopSyncButton)
         syncStateText  = findViewById(R.id.syncStateText)
+        decodedWindowText = findViewById(R.id.testDecodedWindowText)
 
         setupSignalSelector()
         setupZoomSelector()
@@ -435,6 +439,35 @@ class TestActivity : AppCompatActivity() {
         }
     }
 
+    private fun currentDeviceStateLabel(): String {
+        return if (autoSyncState != AutoSyncState.OFF) autoSyncState.name else rxState.name
+    }
+
+    private fun currentDeviceRoleLabel(): String {
+        return when (syncRole) {
+            "INIT" -> "A"
+            "RESP" -> "B"
+            else -> "—"
+        }
+    }
+
+    private fun decodedWindowDisplay(): String {
+        return if (decodedCharWindow.isEmpty()) "(none)" else decodedCharWindow.joinToString("")
+    }
+
+    /**
+     * UI hook for "packet decoded with CRC-8 pass" events.
+     * Call this from the existing CRC-pass branch when packet decoding is available in TestActivity.
+     */
+    private fun onPacketDecodedCrcPass(decodedChars: CharSequence) {
+        if (decodedChars.isEmpty()) return
+        for (ch in decodedChars) {
+            decodedCharWindow.addLast(ch)
+            while (decodedCharWindow.size > 20) decodedCharWindow.removeFirst()
+        }
+        runOnUiThread { decodedWindowText.text = decodedWindowDisplay() }
+    }
+
     // ── Camera ────────────────────────────────────────────────────────────────
 
     @OptIn(ExperimentalCamera2Interop::class)
@@ -555,28 +588,10 @@ class TestActivity : AppCompatActivity() {
                                 lastReceivedMessage = lastReceivedMsg
                             )
                         )
-
-                        // Status line
-                        val minNs   = rxIntervals.minOrNull() ?: Long.MAX_VALUE
-                        val extra = when {
-                            rxState == RxState.SYNCING && rxIntervals.size >= MIN_CLASSIFY_INTERVALS -> {
-                                val label = if (minNs < FAST_THRESHOLD_NS) "C1" else "C2"
-                                " [$label] min=${minNs/1_000_000L}ms e=$totalEdges"
-                            }
-                            rxState == RxState.SYNCING ->
-                                " collecting ${rxIntervals.size}/$MIN_CLASSIFY_INTERVALS"
-                            else -> ""
-                        }
-                        if (autoSyncState != AutoSyncState.OFF) {
-                            stateText.text = "SYNC:${autoSyncState.name} [RX] s=$handshakeDeviceState role=$syncRole"
-                        } else {
-                            stateText.text = "RX: ${rxState.name}$extra"
-                        }
-                        syncStateText.text = if (autoSyncState != AutoSyncState.OFF)
-                            "SYNC: ${autoSyncState.name} $syncRole s=$handshakeDeviceState"
-                        else "SYNC: OFF"
-                        val expMs = aeExposureNs / 1_000_000L
-                        statsText.text = "${if (lastReceivedMsg.isNotEmpty()) lastReceivedMsg else "—"} | exp=${expMs}ms"
+                        stateText.text = currentDeviceStateLabel()
+                        syncStateText.text = currentDeviceRoleLabel()
+                        statsText.text = if (lastReceivedSignal.isNotEmpty()) lastReceivedSignal else "(none)"
+                        decodedWindowText.text = decodedWindowDisplay()
                     }
                 } else {
                     // TX phase: histogram frozen, camera preview still runs.
@@ -587,9 +602,10 @@ class TestActivity : AppCompatActivity() {
                         applyExposure(aeExposureNs)
                     }
                     runOnUiThread {
-                        stateText.text = "SYNC:${autoSyncState.name} [TX] s=$handshakeDeviceState role=$syncRole"
-                        syncStateText.text = "SYNC: ${autoSyncState.name} $syncRole s=$handshakeDeviceState"
-                        statsText.text = "— | exp=${aeExposureNs / 1_000_000L}ms"
+                        stateText.text = currentDeviceStateLabel()
+                        syncStateText.text = currentDeviceRoleLabel()
+                        statsText.text = if (lastReceivedSignal.isNotEmpty()) lastReceivedSignal else "(none)"
+                        decodedWindowText.text = decodedWindowDisplay()
                     }
                 }
 
@@ -667,6 +683,9 @@ class TestActivity : AppCompatActivity() {
                     if (rxIntervals.size >= MIN_CLASSIFY_INTERVALS) {
                         val minInterval = rxIntervals.minOrNull() ?: return
                         val label = if (minInterval < FAST_THRESHOLD_NS) "C1" else "C2"
+                        lastReceivedSignal = label
+                        // CRC-pass decoded payloads (when available in this activity) should call:
+                        // onPacketDecodedCrcPass(decodedChars)
                         lastReceivedMsg = "$label RECEIVED"
                         totalBits = totalEdges
 
@@ -703,6 +722,7 @@ class TestActivity : AppCompatActivity() {
     private fun resetRx() {
         clearToIdle()
         lastReceivedMsg = ""
+        lastReceivedSignal = ""
         lastAnnouncedNs = 0L
         rxBits.clear(); exBits.clear()
         errorCount = 0; totalBits = 0

@@ -303,55 +303,121 @@
         android:layout_height="match_parent"
         android:layout_weight="1"
         android:background="#111A24"
-        android:orientation="vertical"
-        android:padding="12dp">
+        android:orientation="horizontal"
+        android:padding="12dp"
+        android:weightSum="10">
 
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginBottom="10dp"
-            android:text="Status / Histogram"
-            android:textColor="#E6EEF9"
-            android:textSize="18sp"
-            android:textStyle="bold" />
-
-        <TextView
-            android:id="@+id/testStateText"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:fontFamily="monospace"
-            android:text="RX: IDLE"
-            android:textColor="#00E676"
-            android:textSize="13sp"
-            android:textStyle="bold" />
-
-        <TextView
-            android:id="@+id/testStatsText"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:fontFamily="monospace"
-            android:text="ERR 0/0"
-            android:textColor="#FFEE58"
-            android:textSize="13sp" />
-
-        <TextView
-            android:id="@+id/syncStateText"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:fontFamily="monospace"
-            android:text="SYNC: OFF"
-            android:textColor="#00E5FF"
-            android:textSize="12sp" />
-
-        <com.example.underwaterlink.HistogramPanelView
-            android:id="@+id/histogramPanel"
-            android:layout_width="match_parent"
-            android:layout_height="0dp"
-            android:layout_marginTop="12dp"
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
             android:layout_weight="1"
-            android:background="#121212" />
+            android:orientation="vertical"
+            android:paddingEnd="8dp">
+
+            <com.example.underwaterlink.HistogramPanelView
+                android:id="@+id/histogramPanel"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:minWidth="26dp"
+                android:background="#121212" />
+        </LinearLayout>
+
+        <ScrollView
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="9"
+            android:fillViewport="true">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:paddingStart="4dp"
+                android:paddingEnd="2dp">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="10dp"
+                    android:text="Status / Histogram"
+                    android:textColor="#E6EEF9"
+                    android:textSize="18sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Current State"
+                    android:textColor="#9AA7B2"
+                    android:textSize="12sp" />
+
+                <TextView
+                    android:id="@+id/testStateText"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="10dp"
+                    android:fontFamily="monospace"
+                    android:text="IDLE"
+                    android:textColor="#00E676"
+                    android:textSize="13sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Current Role (A/B)"
+                    android:textColor="#9AA7B2"
+                    android:textSize="12sp" />
+
+                <TextView
+                    android:id="@+id/syncStateText"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="10dp"
+                    android:fontFamily="monospace"
+                    android:text="A"
+                    android:textColor="#00E5FF"
+                    android:textSize="13sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Signal Received"
+                    android:textColor="#9AA7B2"
+                    android:textSize="12sp" />
+
+                <TextView
+                    android:id="@+id/testStatsText"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="12dp"
+                    android:fontFamily="monospace"
+                    android:text="(none)"
+                    android:textColor="#FFEE58"
+                    android:textSize="13sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="6dp"
+                    android:text="Decoded (latest 20 chars)"
+                    android:textColor="#9AA7B2"
+                    android:textSize="12sp" />
+
+                <TextView
+                    android:id="@+id/testDecodedWindowText"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:background="#0C131D"
+                    android:fontFamily="monospace"
+                    android:padding="10dp"
+                    android:text="(none)"
+                    android:textColor="#E6EEF9"
+                    android:textSize="14sp" />
+            </LinearLayout>
+        </ScrollView>
     </LinearLayout>
 
 </LinearLayout>
