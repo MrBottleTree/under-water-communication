@@ -249,7 +249,7 @@ class TestActivity : AppCompatActivity() {
 
         previewView    = findViewById(R.id.testPreviewView)
         previewView.implementationMode = PreviewView.ImplementationMode.COMPATIBLE
-        previewView.scaleType = PreviewView.ScaleType.FILL_CENTER
+        previewView.scaleType = PreviewView.ScaleType.FIT_CENTER
         debugOverlay   = findViewById(R.id.testDebugOverlay)
         stateText      = findViewById(R.id.testStateText)
         statsText      = findViewById(R.id.testStatsText)
