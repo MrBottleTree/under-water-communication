@@ -11,7 +11,7 @@
     <LinearLayout
         android:layout_width="0dp"
         android:layout_height="match_parent"
-        android:layout_weight="1"
+        android:layout_weight="0.8"
         android:background="#111A24"
         android:orientation="vertical"
         android:padding="12dp">
@@ -329,7 +329,9 @@
     <FrameLayout
         android:layout_width="0dp"
         android:layout_height="match_parent"
-        android:layout_weight="1"
+        android:layout_weight="1.4"
+        android:layout_marginStart="6dp"
+        android:layout_marginEnd="6dp"
         android:background="#0E1722">
 
         <androidx.camera.view.PreviewView
@@ -365,7 +367,7 @@
     <LinearLayout
         android:layout_width="0dp"
         android:layout_height="match_parent"
-        android:layout_weight="1"
+        android:layout_weight="0.8"
         android:background="#111A24"
         android:orientation="horizontal"
         android:padding="12dp"
