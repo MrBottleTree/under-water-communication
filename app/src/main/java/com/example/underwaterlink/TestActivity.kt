@@ -2,8 +2,6 @@ package com.example.underwaterlink
 
 import android.Manifest
 import android.content.pm.PackageManager
-import android.content.res.ColorStateList
-import android.graphics.Color
 import android.hardware.camera2.CaptureRequest
 import android.os.Bundle
 import android.os.Handler
@@ -11,12 +9,18 @@ import android.os.HandlerThread
 import android.os.Looper
 import android.os.Process
 import android.os.SystemClock
+import android.text.Editable
+import android.text.InputFilter
+import android.text.TextWatcher
 import android.util.Log
 import android.util.Range
 import android.util.Size
 import android.view.WindowManager
+import android.widget.AdapterView
+import android.widget.ArrayAdapter
 import android.widget.Button
-import android.widget.SeekBar
+import android.widget.EditText
+import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import android.widget.ToggleButton
@@ -26,6 +30,7 @@ import androidx.camera.camera2.interop.Camera2CameraControl
 import androidx.camera.camera2.interop.Camera2Interop
 import androidx.camera.camera2.interop.CaptureRequestOptions
 import androidx.camera.camera2.interop.ExperimentalCamera2Interop
+import androidx.camera.core.Camera
 import androidx.camera.core.CameraControl
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
@@ -105,6 +110,9 @@ class TestActivity : AppCompatActivity() {
         // at 100ms/bit), but the sender's window runs for SYNC_TX_WINDOW_MS = 2s.
         // Waiting 2s from classification guarantees the sender has stopped before we start TX.
         private const val SYNC_RESPONSE_DELAY_MS  = 2_000L
+
+        private val ZOOM_OPTIONS = listOf("1x", "2x", "4x")
+        private val SIGNAL_OPTIONS = listOf("C1", "C2", "C3", "R", "S", "E", "Q")
     }
 
     // ── RX state machine (2-state, fully async) ────────────────────────────────
@@ -162,12 +170,7 @@ class TestActivity : AppCompatActivity() {
     // ── Zoom ──────────────────────────────────────────────────────────────────
 
     // setZoomRatio() applies to both Preview and ImageAnalysis frames — no crop needed.
-    private var currentZoom = 1
-
-    private lateinit var zoom1xButton: Button
-    private lateinit var zoom2xButton: Button
-    private lateinit var zoom4xButton: Button
-    private lateinit var zoomLabel:    TextView
+    private var currentZoomRatio = 1f
 
     // ── Slow auto-exposure state (camera executor thread, except aeExposureNs) ──
     // All fields written only from the analysis callback; aeExposureNs is also
@@ -196,6 +199,7 @@ class TestActivity : AppCompatActivity() {
     @Volatile private var isTxRunning = false
     private var txThread: HandlerThread? = null
     private var txHandler: Handler?      = null
+    private var boundCamera: Camera?     = null
     @Volatile private var cameraControl: CameraControl? = null
 
     // ── Camera executor ───────────────────────────────────────────────────────
@@ -208,20 +212,22 @@ class TestActivity : AppCompatActivity() {
     private lateinit var debugOverlay:   DebugOverlayView
     private lateinit var stateText:      TextView
     private lateinit var statsText:      TextView
-    private lateinit var txC1Button:     Button
-    private lateinit var txC2Button:     Button
+    private lateinit var zoomSpinner:    Spinner
+    private lateinit var signalSpinner:  Spinner
+    private lateinit var qPacketNoInput: EditText
+    private lateinit var transmitSignalButton: Button
     private lateinit var stopTxButton:   Button
-    private lateinit var alphaSeekBar:   SeekBar
-    private lateinit var alphaValueText: TextView
-    private lateinit var confSeekBar:    SeekBar
-    private lateinit var confValueText:  TextView
-    private lateinit var gridSeekBar:    SeekBar
-    private lateinit var gridValueText:  TextView
+    private lateinit var syncMessageInput: EditText
     private lateinit var modeToggle:     ToggleButton
+    private lateinit var alphaParamLabel: TextView
+    private lateinit var alphaParamInput: EditText
+    private lateinit var confParamInput:  EditText
+    private lateinit var gridParamInput:  EditText
     private lateinit var histogramPanel: HistogramPanelView
     private lateinit var autoSyncButton: Button
     private lateinit var stopSyncButton: Button
     private lateinit var syncStateText:  TextView
+    private var syncPayloadMessage: String = ""
 
     // ── Permission ────────────────────────────────────────────────────────────
 
@@ -244,28 +250,26 @@ class TestActivity : AppCompatActivity() {
         debugOverlay   = findViewById(R.id.testDebugOverlay)
         stateText      = findViewById(R.id.testStateText)
         statsText      = findViewById(R.id.testStatsText)
-        txC1Button     = findViewById(R.id.testTxC1Button)
-        txC2Button     = findViewById(R.id.testTxC2Button)
+        zoomSpinner    = findViewById(R.id.zoomSpinner)
+        signalSpinner  = findViewById(R.id.signalSpinner)
+        qPacketNoInput = findViewById(R.id.qPacketNoInput)
+        transmitSignalButton = findViewById(R.id.testTransmitSignalButton)
         stopTxButton   = findViewById(R.id.testStopTxButton)
-        alphaSeekBar   = findViewById(R.id.alphaSeekBar)
-        alphaValueText = findViewById(R.id.alphaValueText)
-        confSeekBar    = findViewById(R.id.confSeekBar)
-        confValueText  = findViewById(R.id.confValueText)
-        gridSeekBar    = findViewById(R.id.gridSeekBar)
-        gridValueText  = findViewById(R.id.gridValueText)
+        syncMessageInput = findViewById(R.id.syncMessageInput)
         modeToggle     = findViewById(R.id.modeToggle)
+        alphaParamLabel = findViewById(R.id.alphaParamLabel)
+        alphaParamInput = findViewById(R.id.alphaParamInput)
+        confParamInput  = findViewById(R.id.confParamInput)
+        gridParamInput  = findViewById(R.id.gridParamInput)
         histogramPanel = findViewById(R.id.histogramPanel)
-        zoom1xButton   = findViewById(R.id.zoom1xButton)
-        zoom2xButton   = findViewById(R.id.zoom2xButton)
-        zoom4xButton   = findViewById(R.id.zoom4xButton)
-        zoomLabel      = findViewById(R.id.zoomLabel)
         autoSyncButton = findViewById(R.id.autoSyncButton)
         stopSyncButton = findViewById(R.id.stopSyncButton)
         syncStateText  = findViewById(R.id.syncStateText)
 
-        setupSliders()
+        setupSignalSelector()
+        setupZoomSelector()
+        setupParameterInputs()
         setupButtons()
-        setupZoom()
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
             == PackageManager.PERMISSION_GRANTED
@@ -280,81 +284,84 @@ class TestActivity : AppCompatActivity() {
         txThread?.quitSafely()
         cameraExecutor.shutdown()
         cameraControl?.enableTorch(false)
+        boundCamera = null
     }
 
-    // ── Sliders ───────────────────────────────────────────────────────────────
+    // ── Parameter Inputs ──────────────────────────────────────────────────────
 
-    private fun setupSliders() {
+    private fun setupParameterInputs() {
+        syncMessageInput.filters = arrayOf(InputFilter.LengthFilter(80))
+
         modeToggle.setOnCheckedChangeListener { _, isChecked ->
             useWindowMode = isChecked
+            synchronized(analyzerLock) { analyzer?.useRollingWindow = isChecked }
             if (isChecked) {
-                alphaSeekBar.max      = 999
-                alphaSeekBar.progress = (currentWindowN - 1).coerceIn(0, 999)
-                alphaValueText.text   = "N=${currentWindowN}"
-                synchronized(analyzerLock) {
-                    analyzer?.useRollingWindow = true
-                    analyzer?.windowSize       = currentWindowN
-                }
+                alphaParamLabel.text = "Window N"
+                alphaParamInput.setText(currentWindowN.toString())
+                synchronized(analyzerLock) { analyzer?.windowSize = currentWindowN }
             } else {
-                alphaSeekBar.max      = 999
-                alphaSeekBar.progress = (currentAlpha * 1000f - 1f).toInt().coerceIn(0, 999)
-                alphaValueText.text   = "α=${String.format("%.3f", currentAlpha)}"
-                synchronized(analyzerLock) { analyzer?.useRollingWindow = false }
+                alphaParamLabel.text = "Alpha"
+                alphaParamInput.setText(String.format("%.3f", currentAlpha))
+                synchronized(analyzerLock) { analyzer?.alpha = currentAlpha }
             }
         }
 
-        alphaSeekBar.max      = 999
-        alphaSeekBar.progress = 49
-        alphaValueText.text   = "α=0.050"
-        alphaSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(sb: SeekBar, p: Int, fromUser: Boolean) {
+        alphaParamLabel.text = "Alpha"
+        alphaParamInput.setText(String.format("%.3f", currentAlpha))
+        confParamInput.setText(String.format("%.3f", currentConfThresh))
+        gridParamInput.setText(currentGridSize.toString())
+
+        alphaParamInput.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: Editable?) {
+                val value = s?.toString()?.trim().orEmpty()
+                if (value.isEmpty()) return
                 if (useWindowMode) {
-                    currentWindowN      = p + 1
-                    alphaValueText.text = "N=$currentWindowN"
+                    val n = value.toIntOrNull() ?: return
+                    if (n <= 0) return
+                    currentWindowN = n
                     synchronized(analyzerLock) { analyzer?.windowSize = currentWindowN }
                 } else {
-                    currentAlpha        = (p + 1) / 1000f
-                    alphaValueText.text = "α=${String.format("%.3f", currentAlpha)}"
+                    val alpha = value.toFloatOrNull() ?: return
+                    if (alpha <= 0f) return
+                    currentAlpha = alpha
                     synchronized(analyzerLock) { analyzer?.alpha = currentAlpha }
                 }
             }
-            override fun onStartTrackingTouch(sb: SeekBar) {}
-            override fun onStopTrackingTouch(sb: SeekBar) {}
         })
 
-        confSeekBar.max      = 100
-        confSeekBar.progress = 15
-        confValueText.text   = "0.150"
-        confSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(sb: SeekBar, p: Int, fromUser: Boolean) {
-                currentConfThresh  = p / 100f
-                confValueText.text = String.format("%.3f", currentConfThresh)
+        confParamInput.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: Editable?) {
+                val value = s?.toString()?.trim().orEmpty()
+                if (value.isEmpty()) return
+                val conf = value.toFloatOrNull() ?: return
+                currentConfThresh = conf.coerceIn(0f, 1f)
                 synchronized(analyzerLock) { analyzer?.confidenceThreshold = currentConfThresh }
             }
-            override fun onStartTrackingTouch(sb: SeekBar) {}
-            override fun onStopTrackingTouch(sb: SeekBar) {}
         })
 
-        gridSeekBar.max      = 3
-        gridSeekBar.progress = 1
-        gridValueText.text   = "8px"
-        gridSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(sb: SeekBar, p: Int, fromUser: Boolean) {
-                currentGridSize    = 4 shl p
-                gridValueText.text = "${currentGridSize}px"
+        gridParamInput.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: Editable?) {
+                val value = s?.toString()?.trim().orEmpty()
+                if (value.isEmpty()) return
+                val grid = value.toIntOrNull() ?: return
+                if (grid <= 0 || grid == currentGridSize) return
+                currentGridSize = grid
                 synchronized(analyzerLock) { analyzer = null }
                 resetRx()
             }
-            override fun onStartTrackingTouch(sb: SeekBar) {}
-            override fun onStopTrackingTouch(sb: SeekBar) {}
         })
     }
 
     // ── Buttons ───────────────────────────────────────────────────────────────
 
     private fun setupButtons() {
-        txC1Button.setOnClickListener  { startTx(BIT_PERIOD_NS) }
-        txC2Button.setOnClickListener  { startTx(C2_BIT_PERIOD_NS) }
+        transmitSignalButton.setOnClickListener { transmitSelectedSignal() }
         stopTxButton.setOnClickListener { stopTx() }
         findViewById<Button>(R.id.testResetRxButton).setOnClickListener { resetRx() }
         autoSyncButton.setOnClickListener { startAutoSync() }
@@ -362,32 +369,70 @@ class TestActivity : AppCompatActivity() {
         stopSyncButton.isEnabled = false
     }
 
-    // ── Zoom ──────────────────────────────────────────────────────────────────
-
-    private fun setupZoom() {
-        updateZoomButtons()
-        fun applyZoom(zoom: Int) {
-            if (currentZoom == zoom) return
-            currentZoom = zoom
-            // Reset histogram so stale bimodal state doesn't confuse classification.
-            synchronized(analyzerLock) { analyzer?.reset() }
-            resetRx()
-            updateZoomButtons()
-            zoomLabel.text = "${currentZoom}×"
-            // setZoomRatio applies to ImageAnalysis frames too — no camera restart needed.
-            cameraControl?.setZoomRatio(zoom.toFloat())
+    private fun setupSignalSelector() {
+        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, SIGNAL_OPTIONS)
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        signalSpinner.adapter = adapter
+        signalSpinner.setSelection(0, false)
+        qPacketNoInput.isEnabled = false
+        qPacketNoInput.alpha = 0.5f
+        signalSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: android.view.View?, position: Int, id: Long) {
+                val selected = SIGNAL_OPTIONS[position]
+                qPacketNoInput.isEnabled = selected == "Q"
+                qPacketNoInput.alpha = if (selected == "Q") 1f else 0.5f
+            }
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
         }
-        zoom1xButton.setOnClickListener { applyZoom(1) }
-        zoom2xButton.setOnClickListener { applyZoom(2) }
-        zoom4xButton.setOnClickListener { applyZoom(4) }
     }
 
-    private fun updateZoomButtons() {
-        val active   = ColorStateList.valueOf(Color.parseColor("#1B5E20"))
-        val inactive = ColorStateList.valueOf(Color.parseColor("#333333"))
-        zoom1xButton.backgroundTintList = if (currentZoom == 1) active else inactive
-        zoom2xButton.backgroundTintList = if (currentZoom == 2) active else inactive
-        zoom4xButton.backgroundTintList = if (currentZoom == 4) active else inactive
+    private fun setupZoomSelector() {
+        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, ZOOM_OPTIONS)
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        zoomSpinner.adapter = adapter
+        zoomSpinner.setSelection(0, false)
+        zoomSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: android.view.View?, position: Int, id: Long) {
+                val requestedZoom = when (ZOOM_OPTIONS[position]) {
+                    "2x" -> 2f
+                    "4x" -> 4f
+                    else -> 1f
+                }
+                applyZoomRatio(requestedZoom)
+            }
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
+        }
+    }
+
+    private fun applyZoomRatio(requestedRatio: Float) {
+        currentZoomRatio = requestedRatio
+        val camera = boundCamera ?: return
+        val zoomState = camera.cameraInfo.zoomState.value
+        val minZoom = zoomState?.minZoomRatio
+        val maxZoom = zoomState?.maxZoomRatio
+        val clamped = when {
+            minZoom != null && maxZoom != null -> requestedRatio.coerceIn(minZoom, maxZoom)
+            minZoom != null -> requestedRatio.coerceAtLeast(minZoom)
+            maxZoom != null -> requestedRatio.coerceAtMost(maxZoom)
+            else -> requestedRatio
+        }
+        currentZoomRatio = clamped
+        camera.cameraControl.setZoomRatio(clamped)
+    }
+
+    private fun selectedSignal(): String {
+        val signalBase = signalSpinner.selectedItem?.toString() ?: "C1"
+        if (signalBase != "Q") return signalBase
+        val packetNo = qPacketNoInput.text.toString().toIntOrNull() ?: 0
+        return "Q$packetNo"
+    }
+
+    private fun transmitSelectedSignal() {
+        when (selectedSignal()) {
+            "C1" -> startTx(BIT_PERIOD_NS)
+            "C2" -> startTx(C2_BIT_PERIOD_NS)
+            else -> Toast.makeText(this, "Selected signal is not wired in current TX logic.", Toast.LENGTH_SHORT).show()
+        }
     }
 
     // ── Camera ────────────────────────────────────────────────────────────────
@@ -553,13 +598,14 @@ class TestActivity : AppCompatActivity() {
 
             try {
                 provider.unbindAll()
-                val camera = provider.bindToLifecycle(
+                boundCamera = provider.bindToLifecycle(
                     this, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis
                 )
-                cameraControl = camera.cameraControl
-                if (currentZoom != 1) cameraControl?.setZoomRatio(currentZoom.toFloat())
+                cameraControl = boundCamera?.cameraControl
+                applyZoomRatio(currentZoomRatio)
             } catch (e: Exception) {
                 Log.e(TAG, "Camera bind failed", e)
+                boundCamera = null
             }
 
         }, ContextCompat.getMainExecutor(this))
@@ -668,8 +714,7 @@ class TestActivity : AppCompatActivity() {
     private fun startTx(bitPeriodNs: Long) {
         if (isTxRunning || autoSyncState != AutoSyncState.OFF) return
         isTxRunning = true
-        txC1Button.isEnabled   = false
-        txC2Button.isEnabled   = false
+        transmitSignalButton.isEnabled = false
         stopTxButton.isEnabled = true
 
         txThread = HandlerThread("TestTX").also { it.start() }
@@ -679,8 +724,7 @@ class TestActivity : AppCompatActivity() {
 
     private fun stopTx() {
         isTxRunning = false
-        txC1Button.isEnabled   = true
-        txC2Button.isEnabled   = true
+        transmitSignalButton.isEnabled = true
         stopTxButton.isEnabled = false
         cameraControl?.enableTorch(false)
         txThread?.quitSafely()
@@ -719,8 +763,7 @@ class TestActivity : AppCompatActivity() {
         runOnUiThread {
             // Only re-enable manual TX buttons if auto-sync is not active.
             if (autoSyncState == AutoSyncState.OFF) {
-                txC1Button.isEnabled   = true
-                txC2Button.isEnabled   = true
+                transmitSignalButton.isEnabled = true
                 stopTxButton.isEnabled = false
             }
         }
@@ -902,6 +945,8 @@ class TestActivity : AppCompatActivity() {
 
     private fun startAutoSync() {
         if (autoSyncState != AutoSyncState.OFF) return
+        syncPayloadMessage = syncMessageInput.text.toString().take(80)
+        Log.v(TAG, "SYNC payload length=${syncPayloadMessage.length}")
         stopTx()                          // cancel any manual TX in progress
         resetRx()
         autoSyncState = AutoSyncState.PROBING
