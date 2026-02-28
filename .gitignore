@@ -40,3 +40,5 @@ CLAUDE.md
 .claude/
 /.venv/
 **.xlsx
+prompt.md
+prompt_r.md

@@ -1,20 +1,26 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+    activity_test.xml — 3-column horizontal layout
+    Left: Controls (weight 0.8) | Center: Camera (weight 1.6) | Right: Status (weight 0.8)
+-->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="#090E14"
     android:orientation="horizontal"
-    android:padding="12dp"
-    android:weightSum="3">
+    android:weightSum="3.2">
 
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!-- LEFT PANEL — Controls (scrollable)                             -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
     <LinearLayout
         android:layout_width="0dp"
         android:layout_height="match_parent"
         android:layout_weight="0.8"
         android:background="#111A24"
         android:orientation="vertical"
-        android:padding="12dp">
+        android:padding="10dp">
 
         <ScrollView
             android:layout_width="match_parent"
@@ -23,33 +29,36 @@
 
             <LinearLayout
                 android:layout_width="match_parent"
-                android:layout_height="match_parent"
+                android:layout_height="wrap_content"
                 android:orientation="vertical">
 
+                <!-- Section header -->
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginBottom="12dp"
+                    android:layout_marginBottom="10dp"
                     android:text="Controls"
                     android:textColor="#E6EEF9"
-                    android:textSize="18sp"
+                    android:textSize="16sp"
                     android:textStyle="bold" />
 
+                <!-- ── Zoom group ── -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginBottom="10dp"
+                    android:layout_marginBottom="8dp"
                     android:background="#0E1824"
                     android:orientation="vertical"
-                    android:padding="12dp">
+                    android:padding="10dp">
 
                     <TextView
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginBottom="6dp"
+                        android:layout_marginBottom="4dp"
                         android:text="Zoom"
                         android:textColor="#9AA7B2"
-                        android:textSize="12sp" />
+                        android:textSize="11sp"
+                        android:textAllCaps="true" />
 
                     <Spinner
                         android:id="@+id/zoomSpinner"
@@ -59,187 +68,172 @@
                         android:popupBackground="#1C2A38" />
                 </LinearLayout>
 
+                <!-- ── Manual TX group ── -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginBottom="10dp"
+                    android:layout_marginBottom="8dp"
                     android:background="#0E1824"
                     android:orientation="vertical"
-                    android:padding="12dp">
+                    android:padding="10dp">
 
                     <TextView
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:layout_marginBottom="6dp"
-                        android:text="Signal TX"
+                        android:text="Manual TX"
                         android:textColor="#9AA7B2"
+                        android:textSize="11sp"
+                        android:textAllCaps="true" />
+
+                    <Spinner
+                        android:id="@+id/signalSpinner"
+                        android:layout_width="match_parent"
+                        android:layout_height="40dp"
+                        android:layout_marginBottom="6dp"
+                        android:background="#1C2A38"
+                        android:popupBackground="#1C2A38" />
+
+                    <!-- Q:no input — shown only when "Q:no" is selected -->
+                    <EditText
+                        android:id="@+id/qPacketNoInput"
+                        android:layout_width="match_parent"
+                        android:layout_height="40dp"
+                        android:layout_marginBottom="6dp"
+                        android:background="#1C2A38"
+                        android:digits="0123456789"
+                        android:gravity="start|center_vertical"
+                        android:hint="Pkt# 0-15"
+                        android:inputType="number"
+                        android:maxLength="2"
+                        android:padding="8dp"
+                        android:textColor="#E6EEF9"
+                        android:textColorHint="#8DA3B5"
+                        android:textSize="13sp"
+                        android:visibility="gone" />
+
+                    <!-- Packet message input — shown only when "Packet" is selected -->
+                    <EditText
+                        android:id="@+id/packetMessageInput"
+                        android:layout_width="match_parent"
+                        android:layout_height="40dp"
+                        android:layout_marginBottom="6dp"
+                        android:background="#1C2A38"
+                        android:gravity="start|center_vertical"
+                        android:hint="5 chars for packet"
+                        android:inputType="text"
+                        android:maxLength="5"
+                        android:padding="8dp"
+                        android:textColor="#E6EEF9"
+                        android:textColorHint="#8DA3B5"
+                        android:textSize="13sp"
+                        android:visibility="gone" />
+
+                    <Button
+                        android:id="@+id/testTransmitSignalButton"
+                        android:layout_width="match_parent"
+                        android:layout_height="40dp"
+                        android:layout_marginBottom="6dp"
+                        android:backgroundTint="#1565C0"
+                        android:text="Send Signal"
+                        android:textAllCaps="false"
                         android:textSize="12sp" />
 
-                    <LinearLayout
+                    <Button
+                        android:id="@+id/testStopTxButton"
                         android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:gravity="center_vertical"
-                        android:orientation="horizontal">
-
-                        <Spinner
-                            android:id="@+id/signalSpinner"
-                            android:layout_width="0dp"
-                            android:layout_height="40dp"
-                            android:layout_weight="1"
-                            android:background="#1C2A38"
-                            android:popupBackground="#1C2A38" />
-
-                        <EditText
-                            android:id="@+id/qPacketNoInput"
-                            android:layout_width="68dp"
-                            android:layout_height="40dp"
-                            android:layout_marginStart="8dp"
-                            android:background="#1C2A38"
-                            android:digits="0123456789"
-                            android:gravity="center"
-                            android:hint="Q#"
-                            android:inputType="number"
-                            android:maxLength="3"
-                            android:paddingStart="8dp"
-                            android:paddingEnd="8dp"
-                            android:textColor="#E6EEF9"
-                            android:textColorHint="#8DA3B5"
-                            android:textSize="13sp" />
-                    </LinearLayout>
-
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="10dp"
-                        android:orientation="horizontal">
-
-                        <Button
-                            android:id="@+id/testTransmitSignalButton"
-                            android:layout_width="0dp"
-                            android:layout_height="40dp"
-                            android:layout_weight="1"
-                            android:backgroundTint="#1565C0"
-                            android:text="Transmit Signal"
-                            android:textAllCaps="false"
-                            android:textSize="12sp" />
-
-                        <Button
-                            android:id="@+id/testStopTxButton"
-                            android:layout_width="0dp"
-                            android:layout_height="40dp"
-                            android:layout_marginStart="8dp"
-                            android:layout_weight="1"
-                            android:backgroundTint="#B71C1C"
-                            android:enabled="false"
-                            android:text="Stop Transmitting"
-                            android:textAllCaps="false"
-                            android:textSize="12sp" />
-                    </LinearLayout>
+                        android:layout_height="40dp"
+                        android:backgroundTint="#B71C1C"
+                        android:enabled="false"
+                        android:text="Stop TX"
+                        android:textAllCaps="false"
+                        android:textSize="12sp" />
                 </LinearLayout>
 
+                <!-- ── Protocol group ── -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginBottom="10dp"
+                    android:layout_marginBottom="8dp"
                     android:background="#0E1824"
                     android:orientation="vertical"
-                    android:padding="12dp">
+                    android:padding="10dp">
 
                     <TextView
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:layout_marginBottom="6dp"
-                        android:text="Sync"
+                        android:text="Protocol"
                         android:textColor="#9AA7B2"
-                        android:textSize="12sp" />
-
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:orientation="horizontal">
-
-                        <Button
-                            android:id="@+id/autoSyncButton"
-                            android:layout_width="0dp"
-                            android:layout_height="40dp"
-                            android:layout_weight="1"
-                            android:backgroundTint="#004D40"
-                            android:text="Start Sync"
-                            android:textAllCaps="false"
-                            android:textSize="12sp" />
-
-                        <Button
-                            android:id="@+id/stopSyncButton"
-                            android:layout_width="0dp"
-                            android:layout_height="40dp"
-                            android:layout_marginStart="8dp"
-                            android:layout_weight="1"
-                            android:backgroundTint="#B71C1C"
-                            android:text="Stop Sync"
-                            android:textAllCaps="false"
-                            android:textSize="12sp" />
-                    </LinearLayout>
-                </LinearLayout>
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginBottom="10dp"
-                    android:background="#0E1824"
-                    android:orientation="vertical"
-                    android:padding="12dp">
-
-                    <TextView
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginBottom="6dp"
-                        android:text="Message"
-                        android:textColor="#9AA7B2"
-                        android:textSize="12sp" />
+                        android:textSize="11sp"
+                        android:textAllCaps="true" />
 
                     <EditText
                         android:id="@+id/syncMessageInput"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
+                        android:layout_marginBottom="8dp"
                         android:background="#1C2A38"
                         android:gravity="top|start"
-                        android:hint="Sync message (max 80 chars)"
-                        android:inputType="textMultiLine|textCapSentences"
+                        android:hint="Message (max 80 chars)"
+                        android:inputType="textMultiLine"
                         android:maxLength="80"
                         android:maxLines="3"
-                        android:minHeight="84dp"
+                        android:minHeight="72dp"
                         android:padding="10dp"
                         android:textColor="#E6EEF9"
                         android:textColorHint="#8DA3B5"
                         android:textSize="13sp" />
+
+                    <Button
+                        android:id="@+id/autoSyncButton"
+                        android:layout_width="match_parent"
+                        android:layout_height="40dp"
+                        android:layout_marginBottom="6dp"
+                        android:backgroundTint="#004D40"
+                        android:text="Start Protocol"
+                        android:textAllCaps="false"
+                        android:textSize="12sp" />
+
+                    <Button
+                        android:id="@+id/stopSyncButton"
+                        android:layout_width="match_parent"
+                        android:layout_height="40dp"
+                        android:backgroundTint="#B71C1C"
+                        android:enabled="false"
+                        android:text="Stop Protocol"
+                        android:textAllCaps="false"
+                        android:textSize="12sp" />
                 </LinearLayout>
 
+                <!-- Spacer — pushes Parameters to bottom when content is short -->
                 <View
                     android:layout_width="match_parent"
                     android:layout_height="0dp"
                     android:layout_weight="1" />
 
+                <!-- ── RX Parameters group ── -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:background="#0E1824"
                     android:orientation="vertical"
-                    android:padding="12dp">
+                    android:padding="10dp">
 
                     <TextView
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:layout_marginBottom="8dp"
-                        android:text="Parameters"
-                        android:textColor="#E6EEF9"
-                        android:textSize="14sp"
-                        android:textStyle="bold" />
+                        android:text="RX Parameters"
+                        android:textColor="#9AA7B2"
+                        android:textSize="11sp"
+                        android:textAllCaps="true" />
 
                     <ToggleButton
                         android:id="@+id/modeToggle"
                         android:layout_width="match_parent"
-                        android:layout_height="40dp"
-                        android:layout_marginBottom="10dp"
+                        android:layout_height="36dp"
+                        android:layout_marginBottom="8dp"
                         android:backgroundTint="#2A3A4B"
                         android:checked="false"
                         android:textOff="Alpha Mode"
@@ -253,43 +247,43 @@
                         android:layout_marginBottom="4dp"
                         android:text="Alpha"
                         android:textColor="#9AA7B2"
-                        android:textSize="12sp" />
+                        android:textSize="11sp" />
 
                     <EditText
                         android:id="@+id/alphaParamInput"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginBottom="8dp"
+                        android:layout_marginBottom="6dp"
                         android:background="#1C2A38"
                         android:digits="0123456789."
                         android:hint="0.050 or 30"
                         android:inputType="numberDecimal"
-                        android:padding="10dp"
+                        android:padding="8dp"
                         android:textColor="#E6EEF9"
                         android:textColorHint="#8DA3B5"
-                        android:textSize="13sp" />
+                        android:textSize="12sp" />
 
                     <TextView
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:layout_marginBottom="4dp"
-                        android:text="Alpha Threshold Confidence"
+                        android:text="Conf Threshold"
                         android:textColor="#9AA7B2"
-                        android:textSize="12sp" />
+                        android:textSize="11sp" />
 
                     <EditText
                         android:id="@+id/confParamInput"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginBottom="8dp"
+                        android:layout_marginBottom="6dp"
                         android:background="#1C2A38"
                         android:digits="0123456789."
                         android:hint="0.150"
                         android:inputType="numberDecimal"
-                        android:padding="10dp"
+                        android:padding="8dp"
                         android:textColor="#E6EEF9"
                         android:textColorHint="#8DA3B5"
-                        android:textSize="13sp" />
+                        android:textSize="12sp" />
 
                     <TextView
                         android:layout_width="match_parent"
@@ -297,41 +291,45 @@
                         android:layout_marginBottom="4dp"
                         android:text="Grid Size"
                         android:textColor="#9AA7B2"
-                        android:textSize="12sp" />
+                        android:textSize="11sp" />
 
                     <EditText
                         android:id="@+id/gridParamInput"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginBottom="10dp"
+                        android:layout_marginBottom="8dp"
                         android:background="#1C2A38"
                         android:digits="0123456789"
                         android:hint="8"
                         android:inputType="number"
-                        android:padding="10dp"
+                        android:padding="8dp"
                         android:textColor="#E6EEF9"
                         android:textColorHint="#8DA3B5"
-                        android:textSize="13sp" />
+                        android:textSize="12sp" />
 
                     <Button
                         android:id="@+id/testResetRxButton"
                         android:layout_width="match_parent"
-                        android:layout_height="40dp"
+                        android:layout_height="36dp"
                         android:backgroundTint="#4E342E"
                         android:text="Reset RX"
                         android:textAllCaps="false"
-                        android:textSize="13sp" />
+                        android:textSize="12sp" />
                 </LinearLayout>
+
             </LinearLayout>
         </ScrollView>
     </LinearLayout>
 
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!-- CENTER PANEL — Camera feed (no padding, full height)           -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
     <FrameLayout
         android:layout_width="0dp"
         android:layout_height="match_parent"
-        android:layout_weight="1.4"
-        android:layout_marginStart="6dp"
-        android:layout_marginEnd="6dp"
+        android:layout_weight="1.6"
+        android:layout_marginStart="4dp"
+        android:layout_marginEnd="4dp"
         android:background="#0E1722">
 
         <androidx.camera.view.PreviewView
@@ -348,65 +346,75 @@
             android:clickable="false"
             android:focusable="false" />
 
+        <!-- "Camera" label chip in top-left corner -->
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_gravity="top|start"
-            android:layout_margin="12dp"
+            android:layout_margin="10dp"
             android:background="#66000000"
-            android:paddingStart="10dp"
-            android:paddingTop="6dp"
-            android:paddingEnd="10dp"
-            android:paddingBottom="6dp"
+            android:paddingStart="8dp"
+            android:paddingTop="4dp"
+            android:paddingEnd="8dp"
+            android:paddingBottom="4dp"
             android:text="Camera"
             android:textColor="#E6EEF9"
-            android:textSize="18sp"
+            android:textSize="16sp"
             android:textStyle="bold" />
     </FrameLayout>
 
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!-- RIGHT PANEL — Status + Logs (fully scrollable)                 -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
     <LinearLayout
         android:layout_width="0dp"
         android:layout_height="match_parent"
         android:layout_weight="0.8"
         android:background="#111A24"
         android:orientation="vertical"
-        android:padding="12dp">
+        android:paddingStart="10dp"
+        android:paddingEnd="10dp"
+        android:paddingTop="10dp">
 
-        <ScrollView
+        <!-- Section header (fixed, outside scroll) -->
+        <TextView
             android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:fillViewport="true">
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="8dp"
+            android:text="Status"
+            android:textColor="#E6EEF9"
+            android:textSize="16sp"
+            android:textStyle="bold" />
+
+        <!-- Single ScrollView wrapping ALL content so user can scroll entire panel -->
+        <ScrollView
+            android:id="@+id/rightScrollView"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:fillViewport="false">
 
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="vertical"
-                android:paddingStart="2dp"
-                android:paddingEnd="2dp">
+                android:orientation="vertical">
 
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginBottom="10dp"
-                    android:text="Status"
-                    android:textColor="#E6EEF9"
-                    android:textSize="18sp"
-                    android:textStyle="bold" />
-
+                <!-- ── State group ── -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginBottom="10dp"
+                    android:layout_marginBottom="8dp"
                     android:background="#0E1824"
                     android:orientation="vertical"
-                    android:padding="12dp">
+                    android:padding="10dp">
 
                     <TextView
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="Current State"
+                        android:text="Protocol State"
                         android:textColor="#9AA7B2"
-                        android:textSize="12sp" />
+                        android:textSize="11sp"
+                        android:textAllCaps="true" />
 
                     <TextView
                         android:id="@+id/testStateText"
@@ -414,9 +422,9 @@
                         android:layout_height="wrap_content"
                         android:layout_marginBottom="8dp"
                         android:fontFamily="monospace"
-                        android:text="IDLE"
+                        android:text="OFF"
                         android:textColor="#00E676"
-                        android:textSize="13sp"
+                        android:textSize="14sp"
                         android:textStyle="bold" />
 
                     <View
@@ -428,9 +436,10 @@
                     <TextView
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="Current Role (A/B)"
+                        android:text="Role"
                         android:textColor="#9AA7B2"
-                        android:textSize="12sp" />
+                        android:textSize="11sp"
+                        android:textAllCaps="true" />
 
                     <TextView
                         android:id="@+id/syncStateText"
@@ -438,7 +447,7 @@
                         android:layout_height="wrap_content"
                         android:layout_marginBottom="8dp"
                         android:fontFamily="monospace"
-                        android:text="A"
+                        android:text="&#8212;"
                         android:textColor="#00E5FF"
                         android:textSize="13sp"
                         android:textStyle="bold" />
@@ -452,9 +461,10 @@
                     <TextView
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="Signal Received"
+                        android:text="Last Bit"
                         android:textColor="#9AA7B2"
-                        android:textSize="12sp" />
+                        android:textSize="11sp"
+                        android:textAllCaps="true" />
 
                     <TextView
                         android:id="@+id/testStatsText"
@@ -467,20 +477,23 @@
                         android:textStyle="bold" />
                 </LinearLayout>
 
+                <!-- ── Received Message group ── -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
+                    android:layout_marginBottom="8dp"
                     android:background="#0E1824"
                     android:orientation="vertical"
-                    android:padding="12dp">
+                    android:padding="10dp">
 
                     <TextView
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:layout_marginBottom="6dp"
-                        android:text="Decoded (latest 20 chars)"
+                        android:text="Received Message"
                         android:textColor="#9AA7B2"
-                        android:textSize="12sp" />
+                        android:textSize="11sp"
+                        android:textAllCaps="true" />
 
                     <TextView
                         android:id="@+id/testDecodedWindowText"
@@ -493,8 +506,78 @@
                         android:textColor="#E6EEF9"
                         android:textSize="14sp" />
                 </LinearLayout>
+
+                <!-- ── Signal Log group ── -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="8dp"
+                    android:background="#0E1824"
+                    android:orientation="vertical"
+                    android:padding="10dp">
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginBottom="6dp"
+                        android:text="Signal Log"
+                        android:textColor="#9AA7B2"
+                        android:textSize="11sp"
+                        android:textAllCaps="true" />
+
+                    <TextView
+                        android:id="@+id/signalLogText"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:background="#0A1520"
+                        android:fontFamily="monospace"
+                        android:minHeight="60dp"
+                        android:padding="8dp"
+                        android:text=""
+                        android:textColor="#80CBC4"
+                        android:textSize="12sp" />
+                </LinearLayout>
+
             </LinearLayout>
         </ScrollView>
+
+        <!-- ── Event Log (fixed height, own inner scroll) ── -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="180dp"
+            android:background="#0E1824"
+            android:orientation="vertical"
+            android:padding="10dp">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="6dp"
+                android:text="Event Log"
+                android:textColor="#9AA7B2"
+                android:textSize="11sp"
+                android:textAllCaps="true" />
+
+            <ScrollView
+                android:id="@+id/eventLogScrollView"
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1"
+                android:fillViewport="true">
+
+                <TextView
+                    android:id="@+id/eventLogText"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:background="#0A1520"
+                    android:fontFamily="monospace"
+                    android:padding="8dp"
+                    android:text=""
+                    android:textColor="#90CAF9"
+                    android:textSize="11sp" />
+            </ScrollView>
+        </LinearLayout>
+
     </LinearLayout>
 
 </LinearLayout>
