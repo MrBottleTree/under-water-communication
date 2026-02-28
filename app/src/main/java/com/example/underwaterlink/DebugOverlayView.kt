@@ -8,7 +8,7 @@ import android.graphics.RectF
 import android.graphics.Typeface
 import android.util.AttributeSet
 import android.view.View
-import kotlin.math.min
+import kotlin.math.max
 
 /**
  * Transparent overlay view drawn on top of the camera PreviewView.
@@ -43,7 +43,7 @@ class DebugOverlayView @JvmOverloads constructor(
 
     private var data: DebugData? = null
 
-    // Camera preview geometry within this view (FIT_CENTER letterbox)
+    // Camera preview geometry within this view (FILL_CENTER crop)
     private var previewLeft = 0f
     private var previewTop = 0f
     private var previewWidth = 0f
@@ -112,7 +112,9 @@ class DebugOverlayView @JvmOverloads constructor(
         val vw = width.toFloat()
         val vh = height.toFloat()
         if (vw == 0f || vh == 0f || imageWidth == 0 || imageHeight == 0) return
-        val scale = min(vw / imageWidth, vh / imageHeight)
+        // Match PreviewView.ScaleType.FILL_CENTER:
+        // scale up until both axes fill the view; one axis may be cropped.
+        val scale = max(vw / imageWidth, vh / imageHeight)
         previewWidth = imageWidth * scale
         previewHeight = imageHeight * scale
         previewLeft = (vw - previewWidth) / 2f
