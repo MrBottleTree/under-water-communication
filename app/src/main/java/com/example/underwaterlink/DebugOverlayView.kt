@@ -112,6 +112,8 @@ class DebugOverlayView @JvmOverloads constructor(
         val vw = width.toFloat()
         val vh = height.toFloat()
         if (vw == 0f || vh == 0f || imageWidth == 0 || imageHeight == 0) return
+        // Match PreviewView.ScaleType.FIT_CENTER:
+        // scale down/up so the whole image stays visible; one axis may letterbox.
         val scale = min(vw / imageWidth, vh / imageHeight)
         previewWidth = imageWidth * scale
         previewHeight = imageHeight * scale
