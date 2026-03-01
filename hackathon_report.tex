@@ -62,6 +62,10 @@ Ragav Krishna Ramesh & 2023A7PS0415G \\
 {\large Submitted on March 1, 2026\par}
 \end{titlepage}
 
+% Table of contents page
+\tableofcontents
+\newpage
+
 % Start section numbering from 2 because cover page is Section 1.
 \setcounter{section}{1}
 
@@ -81,6 +85,7 @@ Reliability goals are defined at two levels. At bit level, the receiver must kee
 
 % SECTION 4 --- High-Level System Architecture
 \section{High-Level System Architecture}
+This report documents both the final implementation and the full set of approaches we attempted during the hackathon period. The complete record of attempts is preserved across Sections 2 to 11, while Section 12 (\textit{What Actually Works? / Final Deliverables}) summarizes the capabilities that are currently working reliably.
 
 \subsection{Architecture Diagram}
 \begin{figure}[H]
@@ -441,7 +446,27 @@ Grid and zoom controls & Adjusts spatial sampling and SNR in real time (1x, 2x, 
 
 In practice, this UI is the fastest way to reproduce failures and verify fixes. It turns protocol debugging from guesswork into a controlled procedure with observable state and timing.
 
-% SECTION 12 --- Technical Stack
+% SECTION 12 --- What Actually Works? / Final Deliverables
+\section{What Actually Works? / Final Deliverables}
+The full protocol stack in this report captures everything we attempted during the hackathon, including calibration, role switching, packet request flow, and end-to-end FSM orchestration. We made strong progress on these blocks, but the complete automated protocol loop was not fully stabilized within the hackathon time frame. We are continuing work to complete and harden this path.
+
+The part that works reliably today is manual packet transmission and manual packet reception. Using the test UI, we can manually transmit the packet signal (\texttt{P}) with a chosen message from the fixed transmitter device. On the receiver side, the bitstream is decoded correctly and mapped back into the corresponding 5-character payload.
+
+This behavior is consistent with the current \texttt{SignalProtocol} implementation:
+\begin{itemize}
+\item \texttt{encodePacket()} constructs a 33-bit packet (25 data bits + 8 CRC bits) using Type 1 timing.
+\item \texttt{checkPacketCrc()} validates integrity at the receiver.
+\item \texttt{decodePacket()} converts validated bits back into the 5-character decoded output.
+\end{itemize}
+
+Therefore, the final deliverable we are submitting is a working manual underwater optical link for fixed-position transmitter and receiver devices, with reliable transfer of 5 characters at a time.
+
+\subsection{Evaluation}
+We performed a simple validation run with approximately 40 manually transmitted 5-character packet sequences. In this run, all sent messages were decoded fully and correctly at the receiver. For this evaluated set, the observed packet decoding outcome implies an effective BER of 0.
+
+\textbf{Demo link placeholder:} \href{https://example.com/demo}{https://example.com/demo}
+
+% SECTION 13 --- Technical Stack
 \section{Technical Stack}
 The implementation is built in Kotlin for Android and uses CameraX 1.4.0 with Camera2Interop for manual camera control. The code intentionally avoids MVVM and dependency injection frameworks (Dagger/Hilt) to keep low-level timing behavior and UI wiring in one place during rapid protocol iteration.
 
@@ -465,7 +490,7 @@ Protocol & Custom half-duplex constant-code + packet-request FSM stack \\
 
 This stack is intentionally minimal but complete: enough control for timing-critical behavior without introducing framework overhead that can hide latency and state transitions.
 
-% SECTION 13 --- Conclusion
+% SECTION 14 --- Conclusion
 \section{Conclusion}
 This project delivers a practical underwater optical communication stack using only smartphone hardware. The final system combines transition-driven ROI decoding, ON-duration bit encoding, and a role-based protocol FSM with CRC-backed retransmission.
 
