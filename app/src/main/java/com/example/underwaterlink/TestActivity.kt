@@ -128,6 +128,22 @@ class TestActivity : AppCompatActivity() {
     /** Message text taken from [syncMessageInput] when the protocol starts. */
     private var protocolMessage: String = ""
 
+    // ── Simple packet receiver (manual test / debug mode) ─────────────────────
+    //
+    // Runs in parallel with the ProtocolFsm.  When the TX side sends a "Packet"
+    // signal (which is now wrapped as S + 33 T1 bits + E), this mini state machine
+    // collects the raw bits, logs them, checks the CRC, and appends the decoded
+    // text to decodedWindowText — without needing the full 6-state protocol.
+    //
+    // State: 0 = idle, 1 = collecting T1 bits (after S), 2 = awaiting E (after 33 bits).
+    // All state is mutated only on the camera executor thread (inside onBitDecoded).
+    // resetRx() may clear it from the main thread — the @Volatile flag on simpleRxState
+    // makes that safe; a transient race on the buffers is benign (cleared next reset).
+    @Volatile private var simpleRxState = 0
+    private val simpleT2Buf  = ArrayDeque<Int>()  // sliding window of last 3 T2 bits
+    private val simpleT1Buf  = ArrayDeque<Int>()  // accumulates T1 bits after S
+    private var simplePending = listOf<Int>()      // the 33 bits waiting for E
+
     // ── TX engine ─────────────────────────────────────────────────────────────
 
     /** True while a TX thread is spinning. Written from main thread and TX thread. */
@@ -296,13 +312,8 @@ class TestActivity : AppCompatActivity() {
             onBitDecoded  = { bit ->
                 // Forward to FSM; FSM dispatches state mutations to main thread internally.
                 protocolFsm?.onBitReceived(bit)
-                // Update the last-signal display for the simple signal type case.
-                val label = when (bit.type) {
-                    SignalProtocol.BitType.T1 -> "T1 bit ${bit.value}"
-                    SignalProtocol.BitType.T2 -> "T2 bit ${bit.value}"
-                    else                      -> null
-                }
-                if (label != null) runOnUiThread { testStatsText.text = label }
+                // Feed the simple packet receiver (always active, protocol-independent).
+                simpleOnBitReceived(bit)
             },
             onSignalLost  = {
                 // RxBitDecoder already called reset() on itself before firing this.
@@ -792,7 +803,7 @@ class TestActivity : AppCompatActivity() {
             }
             "Packet" -> {
                 val msg = packetMessageInput.text.toString().take(5)
-                SignalProtocol.encodePacket(msg)
+                SignalProtocol.encodeSPE(msg)   // wraps with S + 33-bit packet + E
             }
             else -> return
         }
@@ -849,16 +860,103 @@ class TestActivity : AppCompatActivity() {
         syncStateText.text = "—"
     }
 
+    // ── Simple packet receiver ────────────────────────────────────────────────
+
+    /**
+     * Lightweight S→data→E packet decoder running in parallel with [ProtocolFsm].
+     *
+     * Called from the camera executor thread (same thread as [RxBitDecoder.processFrame]).
+     * UI mutations dispatched via [runOnUiThread].
+     *
+     * State machine:
+     *  0 (idle)      — watching for S in the T2 sliding window
+     *  1 (collecting) — accumulating 33 T1 bits after S
+     *  2 (awaitE)    — waiting for E after the 33 bits are complete
+     */
+    private fun simpleOnBitReceived(bit: SignalProtocol.DecodedBit) {
+        when (bit.type) {
+
+            SignalProtocol.BitType.T2 -> {
+                simpleT2Buf.addLast(bit.value)
+                while (simpleT2Buf.size > 3) simpleT2Buf.removeFirst()
+
+                if (simpleT2Buf.size == 3) {
+                    val code = SignalProtocol.bitsToConstCode(
+                        simpleT2Buf[0], simpleT2Buf[1], simpleT2Buf[2]
+                    )
+                    when (code) {
+                        SignalProtocol.ConstCode.S -> {
+                            simpleRxState = 1
+                            simpleT1Buf.clear()
+                            simplePending = emptyList()
+                            runOnUiThread {
+                                testStatsText.text = "[0/${SignalProtocol.BITS_PER_PACKET}] …"
+                                appendLog("SIMPLE RX: S → collecting ${SignalProtocol.BITS_PER_PACKET} T1 bits")
+                            }
+                        }
+                        SignalProtocol.ConstCode.E -> {
+                            if (simpleRxState == 2) {
+                                val bits  = simplePending
+                                val crcOk = SignalProtocol.checkPacketCrc(bits)
+                                val text  = SignalProtocol.decodePacket(bits)
+                                val raw   = bits.joinToString("")
+                                simpleRxState = 0
+                                runOnUiThread {
+                                    appendLog("SIMPLE RX: E → bits = $raw")
+                                    appendLog("SIMPLE RX: decoded = '$text'  CRC = ${if (crcOk) "OK ✓" else "FAIL ✗"}")
+                                    if (crcOk) {
+                                        val cur = decodedWindowText.text.toString()
+                                        decodedWindowText.text =
+                                            if (cur == "(none)") text else "$cur$text"
+                                    }
+                                }
+                            }
+                        }
+                        else -> { /* other const codes do not interrupt simple RX */ }
+                    }
+                }
+            }
+
+            SignalProtocol.BitType.T1 -> {
+                if (simpleRxState == 1) {
+                    simpleT1Buf.addLast(bit.value)
+                    val count = simpleT1Buf.size
+                    val soFar = simpleT1Buf.joinToString("")
+                    if (count == SignalProtocol.BITS_PER_PACKET) {
+                        simplePending = simpleT1Buf.toList()
+                        simpleT1Buf.clear()
+                        simpleRxState = 2
+                        runOnUiThread {
+                            testStatsText.text = "[$count/${SignalProtocol.BITS_PER_PACKET}] $soFar"
+                            appendLog("SIMPLE RX: 33 bits complete → awaiting E")
+                        }
+                    } else {
+                        runOnUiThread {
+                            testStatsText.text = "[$count/${SignalProtocol.BITS_PER_PACKET}] $soFar"
+                        }
+                    }
+                }
+            }
+
+            else -> { /* UNKNOWN bits are ignored */ }
+        }
+    }
+
     // ── RX reset ──────────────────────────────────────────────────────────────
 
     /**
-     * Reset the RX decoder and the GridAnalyzer histogram.
+     * Reset the RX decoder, GridAnalyzer histogram, and simple packet receiver.
      *
      * Called on zoom change, grid size change, and manual Reset RX button.
      */
     private fun resetRx() {
         rxBitDecoder?.reset()
         synchronized(analyzerLock) { analyzer?.reset() }
+        // Clear simple receiver state (safe from main thread; see @Volatile note above).
+        simpleRxState = 0
+        simpleT2Buf.clear()
+        simpleT1Buf.clear()
+        simplePending = emptyList()
         runOnUiThread {
             testStatsText.text     = "(none)"
             decodedWindowText.text = "(none)"
