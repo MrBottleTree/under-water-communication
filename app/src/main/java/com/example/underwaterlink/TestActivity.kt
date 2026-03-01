@@ -802,8 +802,12 @@ class TestActivity : AppCompatActivity() {
                 SignalProtocol.encodeQNo(no)
             }
             "Packet" -> {
-                val msg = packetMessageInput.text.toString().take(5)
-                SignalProtocol.encodeSPE(msg)   // wraps with S + 33-bit packet + E
+                // Split the full message into 5-char chunks; each chunk becomes its own
+                // S + 33-T1-bit + E frame.  All frames are concatenated into one TorchStep
+                // list so the TX engine runs them back-to-back without extra gaps.
+                val msg     = packetMessageInput.text.toString()
+                val packets = SignalProtocol.messageToPackets(msg)
+                packets.flatMap { chunk -> SignalProtocol.encodeSPE(chunk) }
             }
             else -> return
         }
@@ -901,14 +905,16 @@ class TestActivity : AppCompatActivity() {
                                 val text  = SignalProtocol.decodePacket(bits)
                                 val raw   = bits.joinToString("")
                                 simpleRxState = 0
+                                // Append the decoded chunk regardless of CRC result.
+                                // CRC-failed chunks get a [?] marker so the user can see
+                                // where corruption occurred without losing the rest of the message.
+                                val chunk = if (crcOk) text else "$text[?]"
                                 runOnUiThread {
                                     appendLog("SIMPLE RX: E → bits = $raw")
                                     appendLog("SIMPLE RX: decoded = '$text'  CRC = ${if (crcOk) "OK ✓" else "FAIL ✗"}")
-                                    if (crcOk) {
-                                        val cur = decodedWindowText.text.toString()
-                                        decodedWindowText.text =
-                                            if (cur == "(none)") text else "$cur$text"
-                                    }
+                                    val cur = decodedWindowText.text.toString()
+                                    decodedWindowText.text =
+                                        if (cur == "(none)") chunk else "$cur$chunk"
                                 }
                             }
                         }
