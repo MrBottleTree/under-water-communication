@@ -89,8 +89,16 @@ class TestActivity : AppCompatActivity() {
         private const val SENSOR_FRAME_DURATION_NS = 50_000_000L   // 50ms = 20fps
 
         // --- RX ---
-        /** Schmitt-trigger threshold; |bitVote| must exceed this to count as definitive. */
-        private const val VOTE_THRESH = 0.25f
+        /**
+         * Spike-detection threshold for the RX bit decoder.
+         *
+         * With the spike-latch model, bitVote ≈ 0 is the stable adapted baseline.
+         * Genuine torch transitions produce brief spikes to ±0.80–1.0; underwater scene
+         * noise (ripples, scattering) produces drift of ±0.10–0.20 in the adapted state.
+         *
+         * 0.30 sits comfortably above the noise floor while remaining sensitive.
+         */
+        private const val VOTE_THRESH = 0.30f
 
         // --- UI ---
         private val ZOOM_OPTIONS   = listOf("1x", "2x", "4x")
@@ -140,10 +148,10 @@ class TestActivity : AppCompatActivity() {
 
     @Volatile private var analyzer: GridAnalyzer? = null
     private var currentAlpha      = 0.05f
-    private var currentConfThresh = 0.15f
+    private var currentConfThresh = 0.05f
     private var currentGridSize   = 8
-    private var currentWindowN    = 30
-    private var useWindowMode     = false
+    private var currentWindowN    = 3
+    private var useWindowMode     = true
 
     /** Guards concurrent read/write of [analyzer] between UI thread and camera executor. */
     private val analyzerLock = Any()
@@ -457,9 +465,15 @@ class TestActivity : AppCompatActivity() {
             }
         }
 
-        // Populate initial values
-        alphaParamLabel.text = "Alpha"
-        alphaParamInput.setText(String.format("%.3f", currentAlpha))
+        // Populate initial values — sync toggle and labels to code defaults
+        modeToggle.isChecked = useWindowMode
+        if (useWindowMode) {
+            alphaParamLabel.text = "Window N"
+            alphaParamInput.setText(currentWindowN.toString())
+        } else {
+            alphaParamLabel.text = "Alpha"
+            alphaParamInput.setText(String.format("%.3f", currentAlpha))
+        }
         confParamInput.setText(String.format("%.3f", currentConfThresh))
         gridParamInput.setText(currentGridSize.toString())
 

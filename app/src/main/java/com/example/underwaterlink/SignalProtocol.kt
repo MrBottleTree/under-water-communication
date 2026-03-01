@@ -7,47 +7,50 @@ package com.example.underwaterlink
  * (which runs absolute wall-clock spinWait loops) can consume these values directly.
  *
  * ## Two bit types
- * - T1 (100ms window): used for packet data (5-bit chars), CRC8, and Q:no field (4-bit).
- * - T2 (300ms window): used for constant codes (3-bit).
+ * - T1 (200ms window): used for packet data (5-bit chars), CRC8, and Q:no field (4-bit).
+ * - T2 (600ms window): used for constant codes (3-bit).
  *
  * ## Coalesced TorchStep representation
- * Every bit encodes to exactly 2 TorchSteps (ON then OFF), with durations that vary
- * by type and value:
- *   T1 BIT 0 → ON(100ms) + OFF(200ms)
- *   T1 BIT 1 → ON(200ms) + OFF(100ms)
- *   T2 BIT 0 → ON(300ms) + OFF(600ms)
- *   T2 BIT 1 → ON(600ms) + OFF(300ms)
+ * Every bit encodes to exactly 2 TorchSteps (ON then OFF):
+ *   T1 BIT 0 → ON(200ms) + OFF(400ms)
+ *   T1 BIT 1 → ON(400ms) + OFF(200ms)
+ *   T2 BIT 0 → ON(600ms) + OFF(1200ms)
+ *   T2 BIT 1 → ON(1200ms) + OFF(600ms)
  *
  * ## RX classification
- * The RX engine uses ON-vs-OFF comparison for T1 and ON duration alone for T2.
+ * The RX engine uses ON duration alone — with doubled timing every ON duration falls into
+ * one of four clusters separated by 100ms (2 frames at 20fps), eliminating all ambiguity.
  * See [RxBitDecoder] and [classifyOnDuration] for details.
  */
 object SignalProtocol {
 
     // ── Timing constants (nanoseconds) ────────────────────────────────────────
 
-    /** 100ms window — base unit for T1 bits. */
-    const val T1_WINDOW_NS = 100_000_000L
+    /** 200ms window — base unit for T1 bits (doubled from original 100ms for 2-frame jitter margin). */
+    const val T1_WINDOW_NS = 200_000_000L
 
-    /** 300ms window — base unit for T2 bits. */
-    const val T2_WINDOW_NS = 300_000_000L
+    /** 600ms window — base unit for T2 bits (doubled from original 300ms). */
+    const val T2_WINDOW_NS = 600_000_000L
 
     // ── RX detection thresholds (nanoseconds) ─────────────────────────────────
 
-    /** ON durations below this are treated as T1; at or above as T2. Midpoint of 150ms max T1b1 and 250ms min T2b0. */
-    const val T1T2_BOUNDARY_NS = 250_000_000L   // 250ms
+    /** ON durations below this are treated as T1; at or above as T2.
+     * Midpoint between T1b1 max (400ms+50ms=450ms) and T2b0 min (600ms-50ms=550ms). */
+    const val T1T2_BOUNDARY_NS = 500_000_000L   // 500ms
 
-    /** Within T1: ON < this → bit 0; ON ≥ this → bit 1. Midpoint of 50ms max T1b0 and 150ms min T1b1. Used for T2 fallback path. */
-    const val T1_BIT_BOUNDARY_NS = 150_000_000L // 150ms
+    /** Within T1: ON < this → bit 0; ON ≥ this → bit 1.
+     * Midpoint between T1b0 max (200ms+50ms=250ms) and T1b1 min (400ms-50ms=350ms). */
+    const val T1_BIT_BOUNDARY_NS = 300_000_000L // 300ms
 
-    /** Within T2: ON < this → bit 0; ON ≥ this → bit 1. Midpoint of 350ms max T2b0 and 550ms min T2b1. */
-    const val T2_BIT_BOUNDARY_NS = 450_000_000L // 450ms
+    /** Within T2: ON < this → bit 0; ON ≥ this → bit 1.
+     * Midpoint between T2b0 max (600ms+50ms=650ms) and T2b1 min (1200ms-50ms=1150ms). */
+    const val T2_BIT_BOUNDARY_NS = 900_000_000L // 900ms
 
-    /** ON pulses shorter than this are noise — return [BitType.UNKNOWN]. Safe floor below 50ms T1b0 min. */
-    const val MIN_ON_DURATION_NS = 50_000_000L   // 50ms
+    /** ON pulses shorter than this are noise. Safe floor below T1b0 min (200ms-50ms=150ms). */
+    const val MIN_ON_DURATION_NS = 100_000_000L   // 100ms
 
-    /** ON pulses longer than this are an error (missed OFF edge); reset recommended. Must exceed T2b1 ON=600ms. */
-    const val ON_TIMEOUT_NS = 750_000_000L        // 750ms
+    /** ON pulses longer than this are an error. Must exceed T2b1 ON max (1200ms+50ms=1250ms). */
+    const val ON_TIMEOUT_NS = 1_500_000_000L        // 1500ms
 
     // ── Character set ─────────────────────────────────────────────────────────
 
@@ -121,8 +124,8 @@ object SignalProtocol {
     /**
      * Encode a single Type-1 bit to two [TorchStep]s (always ON then OFF).
      *
-     * - bit 0: ON(100ms) + OFF(200ms)
-     * - bit 1: ON(200ms) + OFF(100ms)
+     * - bit 0: ON(200ms) + OFF(400ms)
+     * - bit 1: ON(400ms) + OFF(200ms)
      */
     fun encodeT1Bit(bit: Int): List<TorchStep> {
         require(bit == 0 || bit == 1) { "bit must be 0 or 1, got $bit" }
@@ -142,8 +145,8 @@ object SignalProtocol {
     /**
      * Encode a single Type-2 bit to two [TorchStep]s (always ON then OFF).
      *
-     * - bit 0: ON(300ms) + OFF(600ms)
-     * - bit 1: ON(600ms) + OFF(300ms)
+     * - bit 0: ON(600ms) + OFF(1200ms)
+     * - bit 1: ON(1200ms) + OFF(600ms)
      */
     fun encodeT2Bit(bit: Int): List<TorchStep> {
         require(bit == 0 || bit == 1) { "bit must be 0 or 1, got $bit" }
@@ -162,7 +165,7 @@ object SignalProtocol {
 
     /**
      * Encode a [ConstCode] as three consecutive Type-2 bits (MSB first).
-     * Total duration: 3 × 900ms = 2700ms.
+     * Total duration: 3 × 1800ms = 5400ms.
      */
     fun encodeConstCode(code: ConstCode): List<TorchStep> =
         encodeT2Int(code.bits, 3)
@@ -221,7 +224,7 @@ object SignalProtocol {
      *
      * The string is right-padded with [PAD_CHAR] if shorter than 5 chars,
      * then encoded as 25 Type-1 data bits followed by 8 Type-1 CRC bits.
-     * Total: 33 bits × 300ms/bit = 9900ms.
+     * Total: 33 bits × 600ms/bit = 19800ms.
      *
      * Characters not in the charset are replaced with a space before encoding.
      */
@@ -245,7 +248,7 @@ object SignalProtocol {
     /**
      * Build the TX sequence for a Q:no frame.
      * Format: Q code (3 T2 bits) + packet number (4 T1 bits).
-     * Total duration: 2700ms (Q code) + 1200ms (4-bit no) = 3900ms.
+     * Total duration: 5400ms (Q code) + 2400ms (4-bit no) = 7800ms.
      */
     fun encodeQNo(packetNo: Int): List<TorchStep> {
         require(packetNo in 0..15) { "packetNo must be 0–15, got $packetNo" }
@@ -255,11 +258,11 @@ object SignalProtocol {
     /**
      * Build the full S + packet + E TX sequence for a data frame.
      *
-     * - S:  3 T2 bits (2700ms)
-     * - packet data: 33 T1 bits (9900ms)
-     * - E:  3 T2 bits (2700ms)
+     * - S:  3 T2 bits (5400ms)
+     * - packet data: 33 T1 bits (19800ms)
+     * - E:  3 T2 bits (5400ms)
      *
-     * Total: 15300ms per SPE frame.
+     * Total: 30600ms per SPE frame.
      */
     fun encodeSPE(chars: String): List<TorchStep> =
         encodeConstCode(ConstCode.S) + encodePacket(chars) + encodeConstCode(ConstCode.E)
@@ -300,15 +303,15 @@ object SignalProtocol {
     /**
      * Classify an ON-pulse duration to a [DecodedBit].
      *
-     * Decision boundaries (used directly for T2; used as fallback for T1 when no OFF follows):
-     * - [onDurationNs] < [MIN_ON_DURATION_NS]  → too short, noise → UNKNOWN
-     * - [onDurationNs] > [ON_TIMEOUT_NS]        → missed OFF edge → UNKNOWN
-     * - [onDurationNs] < [T1T2_BOUNDARY_NS]:    T1 type (250ms boundary)
-     *     - < [T1_BIT_BOUNDARY_NS] → T1 bit 0   (150ms boundary)
-     *     - ≥ [T1_BIT_BOUNDARY_NS] → T1 bit 1
-     * - [onDurationNs] ≥ [T1T2_BOUNDARY_NS]:    T2 type
-     *     - < [T2_BIT_BOUNDARY_NS] → T2 bit 0   (450ms boundary)
-     *     - ≥ [T2_BIT_BOUNDARY_NS] → T2 bit 1
+     * Decision boundaries:
+     * - [onDurationNs] < [MIN_ON_DURATION_NS]  → too short, noise → UNKNOWN    (< 100ms)
+     * - [onDurationNs] > [ON_TIMEOUT_NS]        → missed OFF edge → UNKNOWN     (> 1500ms)
+     * - [onDurationNs] < [T1T2_BOUNDARY_NS]:   T1 type                         (< 500ms)
+     *     - < [T1_BIT_BOUNDARY_NS] → T1 bit 0                                  (< 300ms)
+     *     - ≥ [T1_BIT_BOUNDARY_NS] → T1 bit 1                                  (300–499ms)
+     * - [onDurationNs] ≥ [T1T2_BOUNDARY_NS]:   T2 type                         (≥ 500ms)
+     *     - < [T2_BIT_BOUNDARY_NS] → T2 bit 0                                  (500–899ms)
+     *     - ≥ [T2_BIT_BOUNDARY_NS] → T2 bit 1                                  (≥ 900ms)
      */
     fun classifyOnDuration(onDurationNs: Long): DecodedBit {
         if (onDurationNs < MIN_ON_DURATION_NS || onDurationNs > ON_TIMEOUT_NS) {

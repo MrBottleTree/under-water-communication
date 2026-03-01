@@ -77,14 +77,14 @@ class ProtocolFsm(
 
     companion object {
         // --- Listen windows ---
-        /** RX listen window in INITIAL state (ms). Needs to fit one C2 = 2700ms plus partner backoff. */
-        private const val INITIAL_RX_WINDOW_MS  = 10_000L
-        /** RX listen window in CALIBRATING_1 / CALIBRATING_2 (ms). Needs to fit one C3 = 2700ms. */
-        private const val CALIB_RX_WINDOW_MS    = 10_000L
-        /** RX listen window in READY_SEND while waiting for Q:no (ms). Q:no = 3900ms, still fits. */
-        private const val READY_RX_WINDOW_MS    = 15_000L
-        /** RX listen window in REQUESTING / SENDING (ms). SPE frame = 15300ms — must exceed it. */
-        private const val DATA_RX_WINDOW_MS     = 20_000L
+        /** RX listen window in INITIAL state (ms). Must cover one C2 = 5400ms plus backoff. */
+        private const val INITIAL_RX_WINDOW_MS  = 15_000L
+        /** RX listen window in CALIBRATING_1 / CALIBRATING_2 (ms). Must cover one C3 = 5400ms. */
+        private const val CALIB_RX_WINDOW_MS    = 15_000L
+        /** RX listen window in READY_SEND while waiting for Q:no (ms). Q:no = 7800ms. */
+        private const val READY_RX_WINDOW_MS    = 20_000L
+        /** RX listen window in REQUESTING / SENDING (ms). SPE frame = 30600ms — must exceed it. */
+        private const val DATA_RX_WINDOW_MS     = 38_000L
 
         // --- Retry limits ---
         /** Max retries in CALIBRATING_1 / CALIBRATING_2 before returning to INITIAL. */

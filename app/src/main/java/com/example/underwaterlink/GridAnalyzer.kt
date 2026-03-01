@@ -6,146 +6,119 @@ data class GridResult(
     val cols: Int,
     val rows: Int,
     val brightness: FloatArray,          // [numGrids], 0.0–1.0 normalised
-    val confidence: FloatArray,          // [numGrids], 0.0–1.0 (normalised Otsu variance)
-    val otsuThreshold: IntArray,         // [numGrids], 0–255 raw bin index
-    val topGrids: List<Int>,             // indices of selected top-k grids
-    val topGridHistograms: List<FloatArray>, // copy of histogram for each topGrid (up to 3)
-    val compositeBrightness: Float,      // confidence-weighted mean brightness, 0.0–1.0
-    val bitVote: Float,                  // −1.0 = dark, +1.0 = bright, ≈0 = uncertain
-    val activeGridCount: Int,            // grids with confidence >= threshold
-    val largestClusterSize: Int          // grids in biggest connected component
+    val confidence: FloatArray,          // [numGrids], amplitude-based (0 = inactive)
+    val otsuThreshold: IntArray,         // [numGrids], unused (kept for API compat)
+    val topGrids: List<Int>,             // indices of top-K voting grids
+    val topGridHistograms: List<FloatArray>, // dummy (kept for API compat)
+    val compositeBrightness: Float,      // global maximum brightness
+    val bitVote: Float,                  // −1.0 = dark, +1.0 = bright, 0.0 = stable
+    val activeGridCount: Int,            // number of grids with significant amplitude
+    val largestClusterSize: Int          // size of the BFS cluster used for voting
 )
 
 /**
- * Per-frame grid analysis for the optical RX channel.
+ * Per-Grid Rolling-Window Analyzer for the optical RX channel.
  *
- * Every frame the camera delivers is divided into [gridSize]×[gridSize] blocks.
- * For each block we maintain a decaying histogram of brightness values (0–255).
- * Otsu's method on that histogram gives:
- *   • a threshold separating "dark" from "bright"
- *   • an inter-class variance that serves as our confidence score
- *     (high = bimodal = this grid is seeing the flashing LED)
+ * For each grid cell, maintains a rolling window of [windowSize] (default 3) brightness
+ * values. The window amplitude (max − min) indicates whether that grid recently transitioned.
  *
- * The top-k highest-confidence grids that form a spatially connected cluster
- * are used for a confidence-weighted bit vote each frame.
+ * ## Why this works with RxBitDecoder's spike-latch model
+ *
+ * With [windowSize] = 3 at 20 fps the three possible steady-state histories are:
+ *
+ *   [B, B, B]  →  amplitude = 0  →  bitVote = 0.0  (stable bright, no vote)
+ *   [D, D, D]  →  amplitude = 0  →  bitVote = 0.0  (stable dark, no vote)
+ *   [D, D, B]  →  amplitude > 0, current = B > mid  →  bitVote ≈ +1.0  (RISE spike)
+ *   [B, B, D]  →  amplitude > 0, current = D < mid  →  bitVote ≈ −1.0  (FALL spike)
+ *
+ * Each edge produces a spike lasting exactly N−1 = 2 frames (100 ms), then returns to
+ * exactly 0.0.  RxBitDecoder's edge-triggered Schmitt trigger catches the first spike and
+ * ignores the adapted baseline — this combination is the design intent documented in CLAUDE.md.
+ *
+ * ## BFS clustering
+ * Only grids whose amplitude exceeds [confidenceThreshold] are "active". A BFS from the
+ * highest-amplitude active grid collects all spatially connected active grids (the torch
+ * region). The top-[topK] grids from that cluster cast an amplitude-weighted vote.
+ * Unrelated scene transitions (person walking, light flicker) that are not connected to
+ * the torch region are excluded.
+ *
+ * ## Initialisation
+ * On the very first frame after creation or [reset], all history slots are filled with the
+ * first frame's brightness values. This eliminates a zero-initialisation artefact where
+ * normal ambient brightness would appear as a large transition.
  */
 class GridAnalyzer(
     val imageWidth: Int = 640,
     val imageHeight: Int = 480,
-    val gridSize: Int = 8,              // smaller = finer grid = better at distance
-    var alpha: Float = 0.05f,           // histogram decay: larger = faster adaptation
-    var confidenceThreshold: Float = 0.15f,
-    var topK: Int = 8,
-    var minClusterSize: Int = 2
+    val gridSize: Int = 8,
+    var alpha: Float = 0.05f,               // kept for API compat (unused in this impl)
+    var confidenceThreshold: Float = 0.05f,
+    var topK: Int = 4,
+    var minClusterSize: Int = 2             // kept for API compat (unused in this impl)
 ) {
-    val cols = imageWidth / gridSize    // e.g. 40 for 640px
-    val rows = imageHeight / gridSize   // e.g. 30 for 480px
+    val cols     = imageWidth  / gridSize
+    val rows     = imageHeight / gridSize
     val numGrids = cols * rows
 
-    // ── Histogram state ───────────────────────────────────────────────────────
+    // ── Per-frame scratch buffers ─────────────────────────────────────────────
 
-    // Probability-mass histograms (values sum ≈ 1). Used by both modes.
-    private val histograms    = Array(numGrids) { FloatArray(256) }
     private val brightness    = FloatArray(numGrids)
-    private val confidence    = FloatArray(numGrids)
-    private val otsuThreshold = IntArray(numGrids)
+    private val confidence    = FloatArray(numGrids)  // = amplitude for active grids
+    private val voteArr       = FloatArray(numGrids)  // signed amplitude vote
+    private val otsuThreshold = IntArray(numGrids)    // unused; kept for GridResult API
 
-    // Maximum possible Otsu inter-class variance:
-    //   equal halves at extremes 0 and 255 → 0.5 * 0.5 * 255² = 16 256.25
-    private val MAX_OTSU_VAR = 16256.25f
+    // ── Rolling-window state ──────────────────────────────────────────────────
 
-    // ── Rolling-window mode ────────────────────────────────────────────────────
-    //
-    // When useRollingWindow = true the histogram is computed from a circular
-    // buffer of the last windowSize brightness bins (uniform weight, no decay).
-    // Switching mode or changing windowSize resets the window buffers.
+    /** Always true — this implementation exclusively uses the rolling-window method. */
+    var useRollingWindow: Boolean = true
 
-    var useRollingWindow: Boolean = false
-        set(value) { field = value; if (value) ensureWindow() else clearWindow() }
-
-    var windowSize: Int = 30
+    /**
+     * Number of frames in each grid's brightness history.
+     *
+     * Default 3: produces ±1.0 spikes for exactly 2 frames at transitions, 0.0 in all
+     * adapted states.  Increasing N widens the spike (more frames of ±1) and also
+     * lengthens the dead-band needed for the baseline to return to 0.
+     *
+     * Clamped to [1, 20].
+     */
+    var windowSize: Int = 3
         set(value) {
-            field = value.coerceIn(1, 1000)
-            if (useRollingWindow) allocateWindow()   // re-alloc with new size
+            field = value.coerceIn(1, 20)
+            allocateHistory()
         }
 
-    // Allocated lazily when useRollingWindow is enabled
-    private var winBins:    Array<ByteArray>? = null  // [numGrids][windowSize] — bin index 0–255
-    private var winCounts:  Array<IntArray>?  = null  // [numGrids][256]        — frequency counts
-    private var winHeads:   IntArray?         = null  // circular-buffer head per grid
-    private var winFilled:  IntArray?         = null  // frames in buffer (ramps up to windowSize)
+    /**
+     * Flat per-grid circular buffer.
+     * Access pattern: `gridHistory[gridIdx * windowSize + slotIdx]`
+     * Re-allocated whenever [windowSize] changes (via [allocateHistory]).
+     */
+    private var gridHistory  = FloatArray(numGrids * windowSize)
+    private var historyHead  = 0   // next write slot in [0, windowSize)
+    private var historyCount = 0   // frames stored; voting requires == windowSize
 
-    private fun ensureWindow() {
-        val b = winBins
-        if (b == null || b.size != numGrids || b[0].size != windowSize) allocateWindow()
+    // ── BFS scratch (pre-allocated to avoid per-frame GC) ────────────────────
+
+    private val visited    = BooleanArray(numGrids)
+    private val isActive   = BooleanArray(numGrids)
+    private val bfsQueue   = IntArray(numGrids)   // BFS frontier
+    private val clusterBuf = IntArray(numGrids)   // grids in the current BFS cluster
+    private val takenBuf   = BooleanArray(numGrids) // top-K selection scratch
+
+    init { allocateHistory() }
+
+    private fun allocateHistory() {
+        gridHistory  = FloatArray(numGrids * windowSize)
+        historyHead  = 0
+        historyCount = 0
     }
-
-    private fun allocateWindow() {
-        winBins   = Array(numGrids) { ByteArray(windowSize) }
-        winCounts = Array(numGrids) { IntArray(256) }
-        winHeads  = IntArray(numGrids)
-        winFilled = IntArray(numGrids)
-        for (h in histograms) h.fill(0f)  // also clear the probability histograms
-    }
-
-    private fun clearWindow() {
-        winBins   = null
-        winCounts = null
-        winHeads  = null
-        winFilled = null
-    }
-
-    private val neighbors = arrayOf(
-        intArrayOf(-1, 0), intArrayOf(1, 0),
-        intArrayOf(0, -1), intArrayOf(0, 1)
-    )
 
     // ── Public API ────────────────────────────────────────────────────────────
 
     fun processFrame(buffer: ByteBuffer, rowStride: Int, cropX: Int = 0, cropY: Int = 0): GridResult {
-        extractBrightness(buffer, rowStride, cropX, cropY)
-        updateHistograms()
-        computeAllOtsu()
 
-        val clusters = findClusters()
-        val largest = clusters.maxByOrNull { it.size } ?: emptyList()
-        val topGrids = pickTopGrids(largest)
-        // Always produce exactly 4 histogram snapshots (pad with zeroed arrays)
-        val topHistograms = (0 until 4).map { i ->
-            if (i < topGrids.size) histograms[topGrids[i]].copyOf() else FloatArray(256)
-        }
-
-        return GridResult(
-            cols = cols,
-            rows = rows,
-            brightness = brightness.copyOf(),
-            confidence = confidence.copyOf(),
-            otsuThreshold = otsuThreshold.copyOf(),
-            topGrids = topGrids,
-            topGridHistograms = topHistograms,
-            compositeBrightness = computeComposite(topGrids),
-            bitVote = computeBitVote(topGrids),
-            activeGridCount = confidence.count { it >= confidenceThreshold },
-            largestClusterSize = largest.size
-        )
-    }
-
-    fun reset() {
-        for (h in histograms) h.fill(0f)
-        brightness.fill(0f)
-        confidence.fill(0f)
-        otsuThreshold.fill(0)
-        winCounts?.forEach { it.fill(0) }
-        winBins?.forEach   { it.fill(0) }
-        winHeads?.fill(0)
-        winFilled?.fill(0)
-    }
-
-    // ── Private helpers ───────────────────────────────────────────────────────
-
-    /** Average Y-plane luma for each grid cell. cropX/cropY offset into a larger buffer for digital zoom. */
-    private fun extractBrightness(buffer: ByteBuffer, rowStride: Int, cropX: Int, cropY: Int) {
+        // ── 1. Per-grid brightness from Y-plane luma ─────────────────────────
         val scale = 1f / (gridSize * gridSize * 255f)
+        var globalMaxBright = 0f
         for (row in 0 until rows) {
             for (col in 0 until cols) {
                 var sum = 0
@@ -155,173 +128,131 @@ class GridAnalyzer(
                         sum += buffer.get(lineStart + px).toInt() and 0xFF
                     }
                 }
-                brightness[row * cols + col] = sum * scale
+                val b   = sum * scale
+                val idx = row * cols + col
+                brightness[idx] = b
+                if (b > globalMaxBright) globalMaxBright = b
             }
         }
-    }
 
-    /** Dispatch to the active histogram update mode. */
-    private fun updateHistograms() {
-        if (useRollingWindow) updateHistogramsWindow() else updateHistogramsAlpha()
-    }
-
-    /** Alpha-decay mode: hist[bin] = hist[bin]*(1−α) + α (exponential moving average). */
-    private fun updateHistogramsAlpha() {
-        val decay = 1f - alpha
-        for (g in 0 until numGrids) {
-            val hist = histograms[g]
-            val bin  = (brightness[g] * 255).toInt().coerceIn(0, 255)
-            for (i in hist.indices) hist[i] *= decay
-            hist[bin] += alpha
-        }
-    }
-
-    /**
-     * Rolling-window mode: maintain a circular buffer of the last [windowSize] bin indices.
-     * The probability histogram is the uniform average over those bins (no decay).
-     * O(1) per grid per frame via running counts.
-     */
-    private fun updateHistogramsWindow() {
-        val bufs   = winBins    ?: return
-        val counts = winCounts  ?: return
-        val heads  = winHeads   ?: return
-        val filled = winFilled  ?: return
-
-        for (g in 0 until numGrids) {
-            val newBin = (brightness[g] * 255).toInt().coerceIn(0, 255)
-            val head   = heads[g]
-
-            if (filled[g] >= windowSize) {
-                // Evict oldest entry
-                val oldBin = bufs[g][head].toInt() and 0xFF
-                counts[g][oldBin]--
-            } else {
-                filled[g]++
+        // ── 2. Update rolling window ─────────────────────────────────────────
+        //
+        // First frame: fill ALL history slots with the current brightness so that
+        // amplitude = 0 on frame 1 (no false transition from zero-init).
+        if (historyCount == 0) {
+            for (i in 0 until numGrids) {
+                val b    = brightness[i]
+                val base = i * windowSize
+                for (j in 0 until windowSize) gridHistory[base + j] = b
             }
-
-            // Insert new entry
-            counts[g][newBin]++
-            bufs[g][head] = newBin.toByte()
-            heads[g] = (head + 1) % windowSize
-
-            // Normalise to probability histogram (same format as alpha mode)
-            val total = filled[g].toFloat()
-            val hist  = histograms[g]
-            for (b in 0..255) hist[b] = counts[g][b] / total
+            historyHead  = 1 % windowSize   // next write goes to slot 1
+            historyCount = windowSize        // window is immediately full
+        } else {
+            val slot = historyHead
+            for (i in 0 until numGrids) gridHistory[i * windowSize + slot] = brightness[i]
+            historyHead = (historyHead + 1) % windowSize
+            if (historyCount < windowSize) historyCount++
         }
-    }
 
-    private fun computeAllOtsu() {
-        for (g in 0 until numGrids) {
-            val (thresh, variance) = otsu(histograms[g])
-            otsuThreshold[g] = thresh
-            confidence[g] = (variance / MAX_OTSU_VAR).coerceIn(0f, 1f)
-        }
-    }
+        // ── 3. Per-grid amplitude and signed vote ────────────────────────────
+        //
+        //   amplitude = max(window) − min(window)
+        //   vote      = +amplitude if current > midpoint, −amplitude otherwise
+        //   active    = amplitude > confidenceThreshold
+        confidence.fill(0f)
+        voteArr.fill(0f)
+        var activeCount = 0
 
-    /**
-     * Otsu's method on a probability-mass histogram.
-     * Returns (threshold bin 0–255, inter-class variance).
-     */
-    private fun otsu(hist: FloatArray): Pair<Int, Float> {
-        var total = 0f
-        var sum = 0f
-        for (i in hist.indices) {
-            total += hist[i]
-            sum += i * hist[i]
-        }
-        if (total == 0f) return 128 to 0f
-
-        var wB = 0f
-        var sumB = 0f
-        var maxVar = 0f
-        var threshold = 0
-
-        for (t in hist.indices) {
-            wB += hist[t]
-            if (wB == 0f) continue
-            val wF = total - wB
-            if (wF <= 0f) break
-            sumB += t * hist[t]
-            val mB = sumB / wB
-            val mF = (sum - sumB) / wF
-            val d = mB - mF
-            val v = wB * wF * d * d
-            if (v > maxVar) {
-                maxVar = v
-                threshold = t
+        for (i in 0 until numGrids) {
+            val base = i * windowSize
+            var gMin = 1f; var gMax = 0f
+            for (j in 0 until windowSize) {
+                val v = gridHistory[base + j]
+                if (v < gMin) gMin = v
+                if (v > gMax) gMax = v
+            }
+            val amp = gMax - gMin
+            if (amp > confidenceThreshold) {
+                val mid       = (gMin + gMax) * 0.5f
+                voteArr[i]    = if (brightness[i] > mid) amp else -amp
+                confidence[i] = amp
+                activeCount++
             }
         }
-        return threshold to maxVar
-    }
 
-    /** BFS flood-fill to find spatially connected groups of high-confidence grids. */
-    private fun findClusters(): List<List<Int>> {
-        val active = BooleanArray(numGrids) { confidence[it] >= confidenceThreshold }
-        val visited = BooleanArray(numGrids)
-        val result = mutableListOf<List<Int>>()
+        // ── 4. BFS cluster + top-K vote ──────────────────────────────────────
+        //
+        // Start BFS from the grid with the highest confidence (most likely the torch).
+        // Collect all spatially connected active grids → largest coherent source.
+        // Select the top-K by confidence from that cluster and compute a weighted vote.
+        val topGridsList: MutableList<Int> = mutableListOf()
+        var bitVote    = 0f
+        var clusterSize = 0
 
-        for (start in 0 until numGrids) {
-            if (!active[start] || visited[start]) continue
-            val cluster = mutableListOf<Int>()
-            val queue = ArrayDeque<Int>()
-            queue.add(start)
-            visited[start] = true
-            while (queue.isNotEmpty()) {
-                val g = queue.removeFirst()
-                cluster.add(g)
-                val r = g / cols
-                val c = g % cols
-                for (n in neighbors) {
-                    val nr = r + n[0]; val nc = c + n[1]
-                    if (nr < 0 || nr >= rows || nc < 0 || nc >= cols) continue
-                    val ng = nr * cols + nc
-                    if (active[ng] && !visited[ng]) {
-                        visited[ng] = true
-                        queue.add(ng)
+        if (activeCount > 0) {
+            var anchorIdx = -1; var maxConf = 0f
+            for (i in 0 until numGrids) {
+                isActive[i] = confidence[i] > 0f
+                visited[i]  = false
+                if (confidence[i] > maxConf) { maxConf = confidence[i]; anchorIdx = i }
+            }
+
+            // BFS from anchor
+            var qHead = 0; var qTail = 0; var cSize = 0
+            bfsQueue[qTail++] = anchorIdx
+            visited[anchorIdx] = true
+            while (qHead < qTail) {
+                val curr = bfsQueue[qHead++]
+                clusterBuf[cSize++] = curr
+                val r = curr / cols; val c = curr % cols
+                if (r > 0)        { val n = curr - cols; if (isActive[n] && !visited[n]) { visited[n] = true; bfsQueue[qTail++] = n } }
+                if (r < rows - 1) { val n = curr + cols; if (isActive[n] && !visited[n]) { visited[n] = true; bfsQueue[qTail++] = n } }
+                if (c > 0)        { val n = curr - 1;    if (isActive[n] && !visited[n]) { visited[n] = true; bfsQueue[qTail++] = n } }
+                if (c < cols - 1) { val n = curr + 1;    if (isActive[n] && !visited[n]) { visited[n] = true; bfsQueue[qTail++] = n } }
+            }
+            clusterSize = cSize
+
+            // Top-K from cluster by confidence (O(cSize × topK) selection; topK is tiny)
+            for (ci in 0 until cSize) takenBuf[ci] = false
+            var sumVotes = 0f; var sumAmp = 0f
+            repeat(minOf(topK, cSize)) {
+                var best = -1; var bestConf = 0f
+                for (ci in 0 until cSize) {
+                    if (!takenBuf[ci] && confidence[clusterBuf[ci]] > bestConf) {
+                        bestConf = confidence[clusterBuf[ci]]; best = ci
                     }
                 }
+                if (best >= 0) {
+                    takenBuf[best] = true
+                    val g = clusterBuf[best]
+                    topGridsList.add(g)
+                    sumVotes += voteArr[g]
+                    sumAmp   += confidence[g]
+                }
             }
-            if (cluster.size >= minClusterSize) result.add(cluster)
+            bitVote = if (sumAmp > 0f) (sumVotes / sumAmp).coerceIn(-1f, 1f) else 0f
         }
-        return result
+
+        // Dummy histogram list — keeps the GridResult API intact for the debug UI.
+        val dummyHistograms = (0 until 4).map { FloatArray(256) }
+
+        return GridResult(
+            cols                = cols,
+            rows                = rows,
+            brightness          = brightness.copyOf(),
+            confidence          = confidence.copyOf(),
+            otsuThreshold       = otsuThreshold,
+            topGrids            = topGridsList,
+            topGridHistograms   = dummyHistograms,
+            compositeBrightness = globalMaxBright,
+            bitVote             = bitVote,
+            activeGridCount     = activeCount,
+            largestClusterSize  = clusterSize
+        )
     }
 
-    /** Top-k grids by confidence from the given cluster (or all active if cluster empty). */
-    private fun pickTopGrids(cluster: List<Int>): List<Int> {
-        val pool = if (cluster.isNotEmpty()) cluster
-        else (0 until numGrids).filter { confidence[it] >= confidenceThreshold }
-        return pool.sortedByDescending { confidence[it] }.take(topK)
-    }
-
-    /** Confidence-weighted mean brightness across the top grids. */
-    private fun computeComposite(topGrids: List<Int>): Float {
-        if (topGrids.isEmpty()) return 0.5f
-        var wSum = 0f; var wTot = 0f
-        for (g in topGrids) {
-            wSum += confidence[g] * brightness[g]
-            wTot += confidence[g]
-        }
-        return if (wTot > 0f) wSum / wTot else 0.5f
-    }
-
-    /**
-     * Signed confidence-weighted vote.
-     * Each grid contributes weight = confidence × |distance from its own Otsu threshold|.
-     * Positive grids (above threshold) add to bright; negative (below) add to dark.
-     * Returns value in [−1, +1].
-     */
-    private fun computeBitVote(topGrids: List<Int>): Float {
-        if (topGrids.isEmpty()) return 0f
-        var bright = 0f; var dark = 0f
-        for (g in topGrids) {
-            val normBright = brightness[g]
-            val normThresh = otsuThreshold[g] / 255f
-            val dist = Math.abs(normBright - normThresh) * 2f  // 0 at boundary, 1 at max
-            val vote = confidence[g] * dist
-            if (normBright > normThresh) bright += vote else dark += vote
-        }
-        val total = bright + dark
-        return if (total > 0f) (bright - dark) / total else 0f
+    fun reset() {
+        brightness.fill(0f)
+        allocateHistory()
     }
 }
