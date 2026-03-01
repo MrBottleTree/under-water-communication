@@ -1,0 +1,476 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{setspace}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{float}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,shapes.geometric,calc}
+\usepackage[hidelinks]{hyperref}
+\usepackage{caption}
+\usepackage{titlesec}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.6em}
+\linespread{1.08}
+\captionsetup{font=small,labelfont=bf}
+\titleformat{\section}{\Large\bfseries}{\thesection.}{0.5em}{}
+\titleformat{\subsection}{\large\bfseries}{\thesubsection}{0.5em}{}
+
+\newcommand{\placeholderbox}[2]{%
+    \fbox{%
+        \parbox[c][#2][c]{0.82\linewidth}{%
+            \centering #1
+        }%
+    }%
+}
+
+\begin{document}
+
+% SECTION 1 --- Cover Page
+\begin{titlepage}
+\centering
+\vspace*{1.2cm}
+
+{\Huge\bfseries Reliable Underwater Optical Communication Using Smartphones\par}
+\vspace{0.6cm}
+{\Large\itshape Mentored by Prof.~Arnab Paul\par}
+\vspace{1.0cm}
+
+\renewcommand{\arraystretch}{1.35}
+\begin{tabular}{>{\bfseries}l l}
+Vishrut Ramraj & 2023A7PS0352G \\
+Ragav Krishna Ramesh & 2023A7PS0415G \\
+\end{tabular}
+
+\vspace{1.3cm}
+\IfFileExists{logo.png}{%
+    \includegraphics[width=0.26\textwidth]{logo.png}
+}{%
+    \placeholderbox{BITS Pilani Logo Placeholder\\Place \texttt{logo.png} in project root.}{5.1cm}
+}
+
+\vfill
+{\large Submitted on March 1, 2026\par}
+\end{titlepage}
+
+% Start section numbering from 2 because cover page is Section 1.
+\setcounter{section}{1}
+
+% SECTION 2 --- Abstract
+\section{Abstract}
+This report presents an Android-to-Android underwater communication system that uses only a phone flashlight for transmission and a phone camera for reception. The final design avoids sustained ON/OFF signaling and instead uses ON-duration encoding with two timing families (Type 1 and Type 2), so the receiver can classify bits from edge transitions at 20 FPS. The receiver pipeline combines ROI-based grid analysis, rolling-window histograms, Otsu thresholding, confidence-weighted voting, and ON-duration decoding. On top of this physical layer, we implement a protocol with calibration constants, packet request/response flow, CRC-8 checks, and a role-based finite state machine. A dedicated test UI supports manual signal generation, full protocol runs, and live tuning of threshold and grid parameters. The system currently supports fixed 5-bit character encoding with packets of five characters and is designed to be extended to richer alphabets and larger payloads.
+
+% SECTION 3 --- Problem Statement
+\section{Problem Statement}
+The core challenge is to enable reliable smartphone-to-smartphone communication underwater without any external hardware. The transmitter can only use the built-in flashlight and the receiver can only use camera frames. This means the link must work under strong constraints: limited frame rate, torch latency, sensor noise, changing ambient light, and motion from hand-held devices.
+
+Underwater conditions make this harder than in-air optical signaling. Scattering and reflections blur the bright source and reduce contrast between ON and OFF states. Background intensity changes can happen within a few frames, especially when the camera auto-exposure is active. For this reason, the system must lock the camera pipeline to manual control and treat signal transitions as the main source of information.
+
+The implementation targets 20 FPS with a 480p analysis stream, because this level is practical for real-time processing on mobile devices while keeping enough temporal resolution for millisecond-scale pulse classes. We also restrict ourselves to no external sync clock, no external light sources, and no added optics. All protocol reliability must come from software design, timing margins, and error checks.
+
+Reliability goals are defined at two levels. At bit level, the receiver must keep the bit error rate (BER) low enough that packets remain decodable after CRC checks. At message level, the goal is stable packet decoding success with retransmission support, even when occasional edges are missed. These goals drive both the physical-layer timing design and the protocol state machine.
+
+% SECTION 4 --- High-Level System Architecture
+\section{High-Level System Architecture}
+
+\subsection{Architecture Diagram}
+\begin{figure}[H]
+\centering
+\resizebox{0.98\linewidth}{!}{%
+\begin{tikzpicture}[
+    module/.style={rectangle, rounded corners=3pt, draw=black, very thick, fill=blue!6, text width=4.8cm, minimum height=1.0cm, align=center, font=\small},
+    arrow/.style={-Latex, very thick, rounded corners=3pt}
+]
+\node[module] (cam) {Camera Control Layer\\(20 FPS lock, AE off, exposure, zoom)};
+\node[module, below=7mm of cam] (roi) {ROI Detection\\(grid partition + candidate regions)};
+\node[module, below=7mm of roi] (grid) {Grid Analyzer\\(histograms, Otsu confidence, bitVote)};
+\node[module, below=7mm of grid] (rx) {RxBitDecoder\\(RISE/FALL latch + ON-duration)};
+\node[module, below=7mm of rx] (sig) {SignalProtocol\\(T1/T2 encoding, const codes, CRC-8)};
+\node[module, below left=12mm and 22mm of sig] (tx) {TX Engine\\(torch-step scheduler)};
+\node[module, below right=12mm and 22mm of sig] (fsm) {Protocol FSM\\(roles, retries, packet flow)};
+\node[module, right=28mm of grid] (ui) {Test Mode UI\\(manual TX, protocol mode, logs, tuning)};
+
+\draw[arrow] (cam) -- (roi);
+\draw[arrow] (roi) -- (grid);
+\draw[arrow] (grid) -- (rx);
+\draw[arrow] (rx) -- (sig);
+\draw[arrow] (sig) -- (fsm);
+\draw[arrow] (fsm) -- (tx);
+\draw[arrow] (tx.north) |- (cam.west);
+\draw[arrow] (ui.north west) |- (cam.east);
+\draw[arrow] (ui.south west) |- (fsm.north);
+\end{tikzpicture}%
+}
+\caption{High-level module flow for the underwater communication stack.}
+\end{figure}
+
+\subsection{High-Level Design Explanation}
+The architecture separates responsibilities cleanly. The camera control layer stabilizes frame timing and exposure behavior. ROI detection and grid analysis convert each frame into a compact signal estimate. The decoder then converts edge transitions into bits, while protocol modules convert those bits into constants, packet requests, and payloads.
+
+This separation keeps implementation and debugging manageable in a single-activity Android app. Physical-layer tuning (grid size, thresholds, window size, zoom) can be changed without rewriting packet logic. In the same way, protocol retries and role switching can be changed without touching image processing code.
+
+The current UI-level payload entry supports messages up to 80 characters for interactive testing. Character mapping currently focuses on lowercase alphabets plus limited punctuation and space. Because encoding and protocol are modular, the design can be extended to richer symbol sets and larger packet formats without changing the core detection loop.
+
+% SECTION 5 --- ROI Detection Algorithm
+\section{ROI Detection Algorithm}
+The receiver operates at 20 FPS on a 480p frame stream. Each frame is divided into grid cells, and each cell maintains a brightness history. During tuning, different cluster granularities were evaluated (1x1, 2x2, 4x4, 8x8 style aggregation) to balance spatial precision and noise immunity. In the final pipeline, connected high-confidence cells form candidate clusters, and the dominant cluster feeds the bit vote.
+
+For each grid, the algorithm updates a brightness histogram and applies Otsu thresholding. If the histogram has a clear twin-peak structure (dark and bright modes), inter-class variance is high and confidence rises. If the grid sees mostly one level, confidence drops. This confidence-weighted design prevents random bright regions from dominating the result.
+
+The bit decision is not based on sustained brightness. Instead, the system tracks transitions. Sustained ON fails because a stable bright scene collapses the histogram into one peak, so Otsu confidence approaches zero and bitVote becomes weak. Sustained OFF has the same issue. This is why every useful symbol must contain ON/OFF transitions.
+
+Rolling-window histograms with \(N=3\) are used by default because they provide fast adaptation while preserving clear transition spikes. With three frames, the system still sees mixed states during edges, but quickly settles to adapted states where vote returns near zero. This makes edge timing easier and reduces false latching in steady light.
+
+\begin{table}[H]
+\centering
+\caption{Main ROI and decoder hyperparameters used during tuning.}
+\begin{tabularx}{\linewidth}{>{\bfseries}l c X}
+\toprule
+Parameter & Typical value & Practical role \\
+\midrule
+Alpha decay (\texttt{alpha}) & 0.05 & Histogram adaptation speed in alpha-decay mode. Lower values are more stable; higher values react faster. \\
+Confidence threshold & 0.15 & Minimum Otsu confidence for a grid to be treated as active. \\
+Vote threshold (\texttt{VOTE\_THRESH}) & 0.25 & Threshold for bright/dark edge latching in rolling-window mode. \\
+Grid size & 8 px & Smaller grids improve spatial precision; larger grids average noise better. \\
+Window size (\(N\)) & 3 frames & Controls temporal smoothing in rolling-window mode. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Parameter tuning is environment-dependent. In daylight, lower exposure and moderate confidence threshold usually work best. In low light, slightly larger grids and lower confidence thresholds help maintain sensitivity. Under flickering backgrounds, raising confidence threshold and validating cluster continuity reduces false edges. Under motion, larger grids and stable vote threshold values improve robustness.
+
+Digital zoom (1x, 2x, 4x) is a key practical control. Zoom improves signal-to-noise ratio (SNR) when the transmitter is far away because more of the frame budget is assigned to the active light region. At short range in stable conditions, 1x is usually sufficient. At longer range or stronger scattering, 2x or 4x often improves transition visibility and reduces missed edges.
+
+% SECTION 6 --- Type 1 and Type 2 Binary Encodings
+\section{Type 1 and Type 2 Binary Encodings}
+
+\subsection{Type 1 (T1) Bit Encoding}
+Type 1 is used for packet data bits. Each bit lasts 600 ms and is encoded by ON duration followed by OFF duration.
+
+\begin{table}[H]
+\centering
+\caption{Type 1 timings.}
+\begin{tabular}{lcc}
+\toprule
+Bit value & ON duration & OFF duration \\
+\midrule
+0 & 200 ms & 400 ms \\
+1 & 400 ms & 200 ms \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[x=0.015cm,y=0.9cm,font=\small]
+\draw[->] (0,0) -- (640,0) node[right]{Time (ms)};
+\foreach \x in {0,100,200,300,400,500,600} {
+    \draw (\x,0.08) -- (\x,-0.08);
+    \node[below] at (\x,-0.08) {\x};
+}
+
+\draw[thick] (0,1.8) -- (0,2.5) -- (200,2.5) -- (200,1.8) -- (600,1.8);
+\node[left] at (0,2.15) {T1 bit 0};
+\node[above] at (100,2.5) {ON 200};
+\node[above] at (400,1.8) {OFF 400};
+
+\draw[thick] (0,0.6) -- (0,1.3) -- (400,1.3) -- (400,0.6) -- (600,0.6);
+\node[left] at (0,0.95) {T1 bit 1};
+\node[above] at (200,1.3) {ON 400};
+\node[above] at (500,0.6) {OFF 200};
+\end{tikzpicture}
+\caption{Type 1 ON-duration timing diagram (600 ms per bit).}
+\end{figure}
+
+The 600 ms window gives enough separation for 20 FPS capture while keeping packet duration practical. At this frame rate, each frame is 50 ms. The 200 ms and 400 ms ON clusters remain separable even with edge jitter, so decoding stays stable.
+
+\subsection{Type 2 (T2) Bit Encoding}
+Type 2 is used for constant control sequences such as calibration and protocol symbols. Each bit lasts 1800 ms.
+
+\begin{table}[H]
+\centering
+\caption{Type 2 timings.}
+\begin{tabular}{lcc}
+\toprule
+Bit value & ON duration & OFF duration \\
+\midrule
+0 & 600 ms & 1200 ms \\
+1 & 1200 ms & 600 ms \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[x=0.005cm,y=0.9cm,font=\small]
+\draw[->] (0,0) -- (1840,0) node[right]{Time (ms)};
+\foreach \x in {0,300,600,900,1200,1500,1800} {
+    \draw (\x,0.08) -- (\x,-0.08);
+    \node[below] at (\x,-0.08) {\x};
+}
+
+\draw[thick] (0,1.8) -- (0,2.5) -- (600,2.5) -- (600,1.8) -- (1800,1.8);
+\node[left] at (0,2.15) {T2 bit 0};
+\node[above] at (300,2.5) {ON 600};
+\node[above] at (1200,1.8) {OFF 1200};
+
+\draw[thick] (0,0.6) -- (0,1.3) -- (1200,1.3) -- (1200,0.6) -- (1800,0.6);
+\node[left] at (0,0.95) {T2 bit 1};
+\node[above] at (600,1.3) {ON 1200};
+\node[above] at (1500,0.6) {OFF 600};
+\end{tikzpicture}
+\caption{Type 2 ON-duration timing diagram (1800 ms per bit).}
+\end{figure}
+
+\subsection{Why ON-Duration Encoding and 100 ms Margins}
+ON-duration encoding works because the receiver only needs accurate RISE and FALL edge times, not absolute intensity levels. This is robust to moderate brightness drift and underwater scattering. Timing clusters are separated by 100 ms margins between class boundaries, which is two frame periods at 20 FPS. That gap is large enough to avoid overlap under normal jitter.
+
+% SECTION 7 --- Character Encoding (5-bit)
+\section{Character Encoding (5-bit)}
+Packet payload uses fixed 5-bit encoding. This keeps decoding deterministic and timing-predictable, which is important for ON-duration links.
+
+\begin{table}[H]
+\centering
+\caption{5-bit character mapping used in the current system.}
+\begin{tabular}{lll}
+\toprule
+5-bit code / index & Character set & Note \\
+\midrule
+00000 to 11001 (0 to 25) & a to z & Lowercase alphabets \\
+11010 (26) & , & Comma \\
+11011 (27) & . & Period \\
+11100 (28) & ! & Exclamation \\
+11101 (29) & ? & Question mark \\
+11110 (30) & [space] & Space character \\
+11111 (31) & PAD & Null padding marker \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+This fixed map is simple to inspect in logs and easy to decode on-device. It also guarantees constant bits per character, so packet timing remains constant.
+
+\subsection{Exploration: Custom Balanced Huffman Encoding (Discarded Idea)}
+We explored a custom balanced Huffman map to reduce average bits per character. In static simulations, this reduced expected payload length. However, variable-length symbols created variable timing at the link layer, which increased ambiguity in edge segmentation and packet boundary handling.
+
+Because this system depends on clear timing classes, the variable-length design made real-time decoding and retransmission logic more complex than expected. We therefore kept fixed 5-bit symbols for the final system.
+
+\begin{figure}[H]
+\centering
+\IfFileExists{balanced_huffman.png}{%
+    \includegraphics[width=0.88\linewidth]{balanced_huffman.png}
+}{%
+    \placeholderbox{Balanced Huffman Exploration Placeholder\\Place \texttt{balanced\_huffman.png} in project root.}{5.0cm}
+}
+\caption{Exploratory balanced Huffman design (not used in final protocol).}
+\end{figure}
+
+% SECTION 8 --- Packet Structure
+\section{Packet Structure}
+Each packet carries exactly five characters. With 5-bit fixed encoding, that gives 25 data bits. An 8-bit CRC-8 field is appended, so each packet has 33 bits total.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[x=0.24cm,y=0.95cm,font=\small]
+\draw[thick] (0,0) rectangle (33,1);
+\draw[thick] (5,0) -- (5,1);
+\draw[thick] (10,0) -- (10,1);
+\draw[thick] (15,0) -- (15,1);
+\draw[thick] (20,0) -- (20,1);
+\draw[thick] (25,0) -- (25,1);
+\node at (2.5,0.5) {C1};
+\node at (7.5,0.5) {C2};
+\node at (12.5,0.5) {C3};
+\node at (17.5,0.5) {C4};
+\node at (22.5,0.5) {C5};
+\node at (29,0.5) {CRC-8};
+\node[below] at (12.5,0) {25 data bits};
+\node[below] at (29,0) {8 bits};
+\end{tikzpicture}
+\caption{Packet bit layout: 5 characters + CRC-8.}
+\end{figure}
+
+All packet bits are transmitted using Type 1 timing. Since each T1 bit is 600 ms, one packet takes \(33 \times 600\) ms \(= 19.8\) seconds.
+
+PAD is used when the source string length is not a multiple of 5 characters. Example: if the user sends \texttt{"hi"}, the packet payload becomes \texttt{"hi"} + three PAD characters so the bitstream always has 25 data bits.
+
+Example 5-character payload: \texttt{"hi, ?"}.
+\begin{center}
+\texttt{h = 00111,\ i = 01000,\ , = 11010,\ [space] = 11110,\ ? = 11101}
+\end{center}
+These 25 data bits are followed by CRC-8 bits before transmission.
+
+CRC-8 is used as a packet integrity check (polynomial \(0x07\), CRC8-CCITT). A single-bit error will almost always alter the computed CRC value.
+
+\begin{table}[H]
+\centering
+\caption{Example CRC mismatch behavior for one-bit corruption.}
+\begin{tabular}{ll}
+\toprule
+Transmitted packet & Data bits \(D\) + CRC \(C\) \\
+Received packet & Data bits \(D'\) (one bit flipped) + same CRC \(C\) \\
+Receiver check & Recomputed CRC \(C' \neq C\), packet rejected and retransmitted \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% SECTION 9 --- Signals / Constant Sequences
+\section{Signals / Constant Sequences}
+Control signals use 3-bit Type 2 encoding. This gives larger timing gaps and improves robustness for protocol constants.
+
+\begin{table}[H]
+\centering
+\caption{Constant signal definitions.}
+\begin{tabular}{lccc}
+\toprule
+Signal & 3-bit value & Encoding type & Duration \\
+\midrule
+C1 & 000 & T2 (3 bits) & 5400 ms \\
+C2 & 001 & T2 (3 bits) & 5400 ms \\
+C3 & 010 & T2 (3 bits) & 5400 ms \\
+R  & 011 & T2 (3 bits) & 5400 ms \\
+S  & 100 & T2 (3 bits) & 5400 ms \\
+E  & 101 & T2 (3 bits) & 5400 ms \\
+Q  & 110 & T2 (3 bits) & 5400 ms \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection*{Q:no Special Case}
+\texttt{Q:no} is a mixed-format frame:
+\begin{itemize}
+\item \texttt{Q} is transmitted as 3 T2 bits (\(5400\) ms).
+\item The packet number \texttt{no} is transmitted as 4 T1 bits (\(2400\) ms).
+\end{itemize}
+Total duration is \(5400 + 2400 = 7800\) ms.
+
+Example for requesting packet 3:
+\begin{center}
+\texttt{Q (110 in T2)} + \texttt{0011 (packet no in T1)}
+\end{center}
+Using T2 for the constant prefix improves detection stability, while T1 for the packet index keeps request messages shorter.
+
+% SECTION 10 --- Protocol FSM
+\section{Protocol FSM}
+
+\begin{figure}[H]
+\centering
+\resizebox{0.98\linewidth}{!}{%
+\begin{tikzpicture}[
+    state/.style={rectangle, rounded corners=4pt, draw=black, very thick, fill=green!8, text width=3.7cm, minimum height=1.0cm, align=center, font=\small},
+    arr/.style={-Latex, very thick},
+    darr/.style={-Latex, thick, dashed}
+]
+\node[state] (off) at (0,7.0) {OFF};
+\node[state] (initial) at (0,5.2) {INITIAL};
+\node[state] (c1) at (-6.0,3.2) {CALIBRATING\_1\\(RESPONDER)};
+\node[state] (c2) at (6.0,3.2) {CALIBRATING\_2\\(INITIATOR)};
+\node[state] (ready) at (-6.0,1.0) {READY\_SEND};
+\node[state] (req) at (6.0,1.0) {REQUESTING};
+\node[state] (send) at (0,-1.4) {SENDING};
+
+\draw[arr] (off) -- node[right, fill=white, inner sep=1pt]{start} (initial);
+\draw[arr] (initial) -- node[above left, fill=white, inner sep=1pt]{RX C1} (c1);
+\draw[arr] (initial) -- node[above right, fill=white, inner sep=1pt]{RX C2} (c2);
+\draw[arr] (c1) -- node[left, fill=white, inner sep=1pt]{TX C2, RX C3} (ready);
+\draw[arr] (c2) -- node[right, fill=white, inner sep=1pt]{TX C3, RX R} (req);
+
+\draw[arr] (ready) to[bend right=12] node[above left, fill=white, inner sep=1pt]{RX Q:no} (send);
+\draw[arr] (send) to[bend right=12] node[below left, fill=white, inner sep=1pt]{out-of-range request, TX E} (ready);
+
+\draw[arr] (req) edge[loop right, min distance=28mm] node[right, align=left, fill=white, inner sep=1pt]{TX Q:no(n),\\RX S...E} (req);
+\draw[arr] (send) edge[loop below, min distance=20mm] node[below, align=center, fill=white, inner sep=1pt]{RX Q:no(n), TX SPE(n)} (send);
+
+\draw[arr] ($(req.north west)+(0,0.12)$) -- node[above, fill=white, inner sep=1pt]{RX bare E} ($(ready.north east)+(0,0.12)$);
+\draw[arr] ($(ready.south east)+(0,-0.12)$) -- node[below, fill=white, inner sep=1pt]{afterSentE and RX R} ($(req.south west)+(0,-0.12)$);
+
+\draw[darr] (c1.north east) to[bend left=14] node[above, fill=white, inner sep=1pt]{timeout/retry limit} (initial.west);
+\draw[darr] (c2.north west) to[bend right=14] node[above, fill=white, inner sep=1pt]{timeout/retry limit} (initial.east);
+\draw[darr] (req.north west) to[bend left=18] node[right, fill=white, inner sep=1pt]{timeout/retry limit} (initial.south east);
+\end{tikzpicture}%
+}
+\caption{Protocol finite state machine for session setup and packet exchange.}
+\end{figure}
+
+The FSM coordinates two roles. The responder path begins after receiving \texttt{C1}, then enters \texttt{READY\_SEND}. The initiator path begins after receiving \texttt{C2}, then enters \texttt{REQUESTING}. This role split avoids both peers trying to send payloads at the same time.
+
+During \texttt{REQUESTING}, the node asks for packet numbers sequentially using \texttt{Q:no}. During \texttt{SENDING}, the node responds with either \texttt{SPE} (start + packet + end) or a bare \texttt{E} when packet range is exhausted. This keeps packet transfer explicit and easy to recover after loss.
+
+\texttt{RESPONSE\_DELAY\_MS} (3000 ms) is critical. After each TX completion, the FSM waits before opening the next RX window. This prevents TX/RX overlap and gives the remote side enough time to finish torch transitions.
+
+% SECTION 11 --- Test Mode UI
+\section{Test Mode UI}
+
+\begin{figure}[H]
+\centering
+\IfFileExists{test_mode_ui.png}{%
+    \includegraphics[width=0.95\linewidth]{test_mode_ui.png}
+}{%
+    \placeholderbox{Test Mode UI Placeholder\\Place \texttt{test\_mode\_ui.png} in project root.}{6.2cm}
+}
+\caption{Test mode interface used during development and evaluation.}
+\end{figure}
+
+The test UI supports three operation styles in one screen: manual signal transmission, direct packet transmission, and full protocol mode. This allows rapid switching between physical-layer checks and full end-to-end behavior checks.
+
+\begin{table}[H]
+\centering
+\caption{UI blocks and their debugging purpose.}
+\begin{tabularx}{\linewidth}{>{\bfseries}l X}
+\toprule
+UI feature & Use in debugging and evaluation \\
+\midrule
+Manual signal transmit & Sends constants (\texttt{C1/C2/C3/R/S/E/Q}) to validate timing classes and edge detection. \\
+Packet transmit & Sends packet-form payloads to test 5-bit mapping, CRC behavior, and packet duration. \\
+Full protocol controls & Runs the FSM flow end-to-end and validates retries, role changes, and completion handling. \\
+Sliding window / mode inputs & Switches histogram mode and window length to compare transition stability. \\
+Event log and signal log & Gives a timestamped trace for decoded symbols, state changes, and timeout events. \\
+Alpha / threshold inputs & Tunes confidence and edge trigger behavior under different lighting conditions. \\
+Grid and zoom controls & Adjusts spatial sampling and SNR in real time (1x, 2x, 4x). \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+In practice, this UI is the fastest way to reproduce failures and verify fixes. It turns protocol debugging from guesswork into a controlled procedure with observable state and timing.
+
+% SECTION 12 --- Technical Stack
+\section{Technical Stack}
+The implementation is built in Kotlin for Android and uses CameraX 1.4.0 with Camera2Interop for manual camera control. The code intentionally avoids MVVM and dependency injection frameworks (Dagger/Hilt) to keep low-level timing behavior and UI wiring in one place during rapid protocol iteration.
+
+\begin{table}[H]
+\centering
+\caption{Core technical stack.}
+\begin{tabularx}{\linewidth}{>{\bfseries}l X}
+\toprule
+Layer & Stack choice \\
+\midrule
+Language & Kotlin \\
+Camera API & CameraX 1.4.0 + Camera2Interop (AE off, explicit frame duration, torch control) \\
+Concurrency & HandlerThreads for TX scheduling and camera frame processing \\
+Signal processing & Rolling-window histograms, Otsu thresholding, confidence-weighted bit voting \\
+Encoding & Custom T1/T2 ON-duration binary scheme + 5-bit character map \\
+Integrity & CRC-8 (CRC8-CCITT, polynomial 0x07) \\
+Protocol & Custom half-duplex constant-code + packet-request FSM stack \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+This stack is intentionally minimal but complete: enough control for timing-critical behavior without introducing framework overhead that can hide latency and state transitions.
+
+% SECTION 13 --- Conclusion
+\section{Conclusion}
+This project delivers a practical underwater optical communication stack using only smartphone hardware. The final system combines transition-driven ROI decoding, ON-duration bit encoding, and a role-based protocol FSM with CRC-backed retransmission.
+
+The key reliability gain comes from matching the physical layer to camera realities: fixed 20 FPS timing, AE-off capture, clear ON-duration clusters, and transition-based detection instead of sustained brightness detection. On top of this, protocol-level checks and retries convert noisy bitstreams into usable packet delivery.
+
+Future work will focus on in-water parameter retuning, BER characterization across distance/turbidity ranges, adaptive threshold presets, and larger payload support while preserving real-time decode stability.
+
+\end{document}
