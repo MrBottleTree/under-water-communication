@@ -1,5 +1,7 @@
 # UnderwaterLink
 
+Demo video available [here](https://drive.google.com/file/d/1hO3k2oKvrerJrkhTFdUGY_0N6D6CAi16/view?usp=sharing).
+
 A proof-of-concept Android app for smartphone-to-smartphone communication **using only the camera and flashlight** — no Wi-Fi, no Bluetooth, no external hardware. Designed for use underwater, where radio signals are heavily attenuated.
 
 ---
